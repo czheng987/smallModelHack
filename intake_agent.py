@@ -28,7 +28,7 @@ def assign_request(user_text):
                     "You decide what a college student is asking for. "
                     "Reply with exactly one word and no other text.\n"
                     "resource: campus help, counseling, library databases, or other resources.\n"
-                    "schedule: classes, study time, exams, deadlines, or planning the week.\n"
+                    "schedule: classes, study time, exams, deadlines, or conflicting schedule planning the week.\n"
                     "both: the student wants resource help and schedule help.\n"
                     "none: the message is not a request for resources or a schedule."
                 ),
