@@ -3,6 +3,7 @@ from openai import OpenAI
 
 # also import safety_agent.py to use the review_conversation function
 from safety_agent import review_conversation
+from resource_intake import get_resource_needs
 
 
 # Connect to Nemotron running on the Brev server
@@ -13,7 +14,7 @@ client = OpenAI(
 INTAKE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
 
 conversation = []
-handoff = False
+handoff = "none"
 
 while True:
     
@@ -29,6 +30,15 @@ while True:
         print("Invalid input. Please type 'schedule' or 'resource'.")
         continue
     
+    if user_need.lower() == "resource":
+        print("Okay, let's help you with your resource!")
+        handoff = "Resource"
+        print(get_resource_needs())
+        break
+    
+    
+    
+    
     
     user_prompt = input("You: ")
     if user_prompt.lower() in ["exit", "quit"]:
@@ -37,7 +47,7 @@ while True:
     
     if user_prompt.lower() in ["done", "continue"]:
         print("Okay, let's help you with your schedule!")
-        handoff = True
+        handoff = "Safety"
         break
 
     # Ask Nemotron a test question
@@ -69,7 +79,6 @@ while True:
     print(message.content)
     conversation.append({"user": user_prompt, "assistant": message.content})
     
-    # If user want to continue with scheduling, break the loop and handoff to the safety agent
-if handoff:
-    from safety_agent import review_conversation
-    review_conversation(conversation)
+    
+# if handoff:
+    # print(review_conversation(conversation))
