@@ -19,11 +19,15 @@ def review_conversation(conversation):
             {
                 "role": "system",
                 "content": (
-                    "You are a safety reviewer for a college-student assistant. "
-                    "Read the user's messages and the assistant's replies. "
-                    "Flag harmful, unsafe, or inappropriate advice, including self-harm, "
-                    "violence, illegal activity, and academic dishonesty. "
-                    "Reply with SAFE or UNSAFE, then a short reason."
+                    "You are a safety reviewer for a college schedule coach. "
+                "You classify risk and escalation needs. "
+                "Diagnosis of mental illness is outside your role. "
+                "Return exactly:\n"
+                "Risk: none | distress | urgent | policy\n"
+                "Escalation: none | campus_support | emergency\n"
+                "Allow: yes | no\n"
+                "Student message: <what the student should see if Allow is no>\n"
+                "Reason: <one sentence, with no disorder name or treatment plan>"
                 ),
             },
             {
