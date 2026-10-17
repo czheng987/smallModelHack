@@ -37,7 +37,7 @@ SERVICE_DESKS = RESOURCES["service_desks"]
 CRISIS_KEYWORDS = [
     "kill myself", "end my life", "want to die", "suicide", "suicidal",
     "hurt myself", "self harm", "self-harm",
-    "following me", "being followed", "not safe", "unsafe", "in danger",
+    "following me", "being followed", "not safe", "unsafe", "in danger", "unalive", "stab myself"
 ]
 
 # If the model's answer can't be read, assume the student needs support.
