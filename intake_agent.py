@@ -1,7 +1,7 @@
+import re
+
 from openai import OpenAI
 
-# also import safety_agent.py to use the review_conversation function
-from safety_agent import review_conversation
 from resource_intake import get_resource_needs
 from schedule_intake import get_schedule_needs
 
@@ -17,102 +17,135 @@ handoff = "none"
 ROUTES = {"resource", "schedule", "both", "none"}
 
 
-def assign_request(user_text):
-    """Ask Nemotron which intake the student's request belongs to."""
-    response = client.chat.completions.create(
-        model=INTAKE_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You decide what a college student is asking for. "
-                    "Reply with exactly one word and no other text.\n"
-                    "resource: campus help, counseling, library databases, or other resources.\n"
-                    "schedule: classes, study time, exams, deadlines, or conflicting schedule planning the week.\n"
-                    "both: the student wants resource help and schedule help.\n"
-                    "none: the message is not a request for resources or a schedule."
-                ),
-            },
-            {
-                "role": "user",
-                "content": user_text,
-            },
-        ],
-        max_tokens=5,
-        temperature=0,
+def message_text(message):
+    """Read the reply, including a reasoning field when the server splits it out."""
+    chunks = []
+    content = message.content or ""
+    if isinstance(content, list):
+        content = " ".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    if content:
+        chunks.append(content)
+    extra = getattr(message, "model_extra", None) or {}
+    if isinstance(extra, dict):
+        for key in ("reasoning_content", "reasoning"):
+            value = extra.get(key)
+            if isinstance(value, str) and value.strip():
+                chunks.append(value)
+    return "\n".join(chunks)
+
+
+def parse_route(reply):
+    """Pull resource, schedule, both, or none out of a normal model reply."""
+    text = re.sub(
+        r"<think>.*?</think>",
+        " ",
+        reply or "",
+        flags=re.DOTALL | re.IGNORECASE,
     )
-    reply = response.choices[0].message.content or ""
-    words = "".join(ch if ch.isalpha() else " " for ch in reply).lower().split()
-    if len(words) == 1 and words[0] in ROUTES:
-        return words[0]
+    lines = [line.strip() for line in text.splitlines() if line.strip()] or [text.strip()]
+    for line in reversed(lines):
+        words = re.findall(r"\b(resource|schedule|both|none)\b", line.lower())
+        if not words:
+            continue
+        if len(words) == 1:
+            return words[0]
+        labels = set(words)
+        if "both" in labels or {"resource", "schedule"} <= labels:
+            return "both"
+        return words[-1]
     return "none"
 
 
-while True:
-
-    user_need = input("What do you need help with? (Type 'exit' to quit): ")
-
-    if user_need.lower() in ["exit", "quit"]:
-        print("Exiting the chat. Goodbye!")
-        break
-
-    # Nemotron reads the request and assigns resource, schedule, both, or none.
-    route = assign_request(user_need)
-    print(f"Assigned: {route}")
-
-    if route == "none":
-        print("I can help with campus resources, your schedule, or both. Tell me a bit more about what you need.")
-        continue
-    
-    if user_need.lower() == "resource":
-        print("Okay, let's help you with your resource!")
-        handoff = "Resource"
-        print(get_resource_needs())
-        break
-    
-    
-    
-    
-    
-    user_prompt = input("You: ")
-    if user_prompt.lower() in ["exit", "quit"]:
-        print("Exiting the chat. Goodbye!")
-        break
-    
-    if user_prompt.lower() in ["done", "continue"]:
-        print("Okay, let's help you with your schedule!")
-        handoff = "Safety"
-        break
-
-    # Ask Nemotron a test question
-    response = client.chat.completions.create(
-    model=INTAKE_MODEL,
-    messages=[
+def assign_request(user_text):
+    """Ask Nemotron which intake the student's request belongs to."""
+    messages = [
         {
             "role": "system",
             "content": (
-                "You are a supportive AI assistant for college students. "
-                "Give practical, encouraging, and concise advice."
-            )
+                "You route a UNC student's request by its meaning. "
+                "The student will usually not say the words resource or schedule. "
+                "Reply with exactly one word: resource, schedule, both, or none.\n"
+                "resource: campus help, counseling, someone to talk to, library databases, articles, or other campus services.\n"
+                "schedule: classes, study time, exams, deadlines, workload, or planning the week.\n"
+                "both: the student needs campus help and help planning their time.\n"
+                "none: greetings, thanks, jokes, or anything that is not campus help or time planning.\n"
+                "Examples:\n"
+                "Student: I have a chem midterm Thursday and I don't know what to do tonight\n"
+                "schedule\n"
+                "Student: Where can I find psychology articles from my apartment?\n"
+                "resource\n"
+                "Student: I need sources for my essay and a plan to finish it before Friday\n"
+                "both\n"
+                "Student: hello\n"
+                "none"
+            ),
         },
         {
             "role": "user",
-            "content": (
-                user_prompt
-            )
-        }
-    ],
-    max_tokens=1500,
-    temperature=0.7
-)
+            "content": user_text,
+        },
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=INTAKE_MODEL,
+            messages=messages,
+            max_tokens=64,
+            temperature=0,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+    except TypeError:
+        response = client.chat.completions.create(
+            model=INTAKE_MODEL,
+            messages=messages,
+            max_tokens=800,
+            temperature=0,
+        )
+    except Exception as error:
+        if getattr(error, "status_code", None) not in (400, 422):
+            raise
+        response = client.chat.completions.create(
+            model=INTAKE_MODEL,
+            messages=messages,
+            max_tokens=800,
+            temperature=0,
+        )
+    reply = message_text(response.choices[0].message)
+    route = parse_route(reply)
+    if route not in ROUTES:
+        return "none"
+    return route
 
-# Display Nemotron's response
-    message = response.choices[0].message
-    #print("=== NEMOTRON RESPONSE ===")
-    print("Nemotron: ")
-    print(message.content)
-    conversation.append({"user": user_prompt, "assistant": message.content})
-    
-    
-# if handoff:
-    # print(review_conversation(conversation))
+
+def main():
+    global handoff
+    while True:
+        user_need = input("What do you need help with? (Type 'exit' to quit): ")
+
+        if user_need.lower() in ["exit", "quit"]:
+            print("Exiting the chat. Goodbye!")
+            break
+
+        # Nemotron reads the request and assigns resource, schedule, both, or none.
+        route = assign_request(user_need)
+        print(f"Assigned: {route}")
+
+        if route == "none":
+            print("I can help with campus resources, your schedule, or both. Tell me a bit more about what you need.")
+            continue
+
+        if route in ("resource", "both"):
+            print("Okay, let's help you with your resources!")
+            handoff = "Resource"
+            get_resource_needs()
+
+        if route in ("schedule", "both"):
+            print("Okay, let's help you with your schedule!")
+            handoff = "Safety"
+            get_schedule_needs()
+
+
+if __name__ == "__main__":
+    main()
