@@ -5,6 +5,7 @@ client = OpenAI(
     api_key="not-needed",
 )
 
+ # Define the function to review the conversation for safety and appropriateness
 def review_conversation(conversation):
     transcript = "\n".join(
         f"User: {turn['user']}\nAssistant: {turn['assistant']}"
