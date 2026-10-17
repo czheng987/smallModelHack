@@ -1,0 +1,71 @@
+{
+  "school": "UNC Chapel Hill",
+  "last_verified": "2026-10-17",
+
+  "crisis": [
+    {"name": "Emergency services", "phone": "911", "details": "Call if you are in immediate danger"},
+    {"name": "988 Suicide & Crisis Lifeline", "phone": "988", "details": "Call or text, 24/7"},
+    {"name": "UNC CAPS 24/7 line", "phone": "919-966-3658", "details": "Becomes a crisis support line after hours"}
+  ],
+
+  "mental_health": [
+    {"name": "UNC CAPS (Counseling and Psychological Services)", "phone": "919-966-3658", "details": "Answered 24/7"},
+    {"name": "Crisis Text Line", "phone": "741741", "details": "Text START to 741741, anytime"}
+  ],
+
+  "food": [
+    {"name": "Carolina Cupboard (campus food pantry)", "link": "carolinacupboard.web.unc.edu", "details": "Mon-Fri 9am-5pm, some Saturdays 12-4pm"},
+    {"name": "Inter-Faith Council food pantry", "phone": "919-929-6380", "details": "110 W. Main St, Carrboro"}
+  ],
+
+  "housing": [
+    {"name": "Dean of Students - Basic Needs", "phone": "919-966-4042", "link": "dos.unc.edu/student-support/basicneeds/"},
+    {"name": "Student Emergency Fund", "link": "dos.unc.edu/student-support/student-emergency-funds/", "details": "Can help with temporary housing needs"}
+  ],
+
+  "lockout_room": [
+    {"name": "Your community's Carolina Housing Service Desk", "details": "Issues temporary replacement keys"},
+    {"name": "Carolina Housing", "phone": "919-962-5401"}
+  ],
+
+  "lockout_car": [
+    {"name": "UNC Police (non-emergency)", "phone": "919-962-8100", "details": "24/7; can help with vehicle lockouts on campus"}
+  ],
+
+  "service_desks": {
+    "baity hill":   {"desk": "Baity Hill", "phone": "984-363-5562"},
+    "avery":        {"desk": "Carmichael/Parker", "phone": "919-843-5499"},
+    "carmichael":   {"desk": "Carmichael/Parker", "phone": "919-843-5499"},
+    "parker":       {"desk": "Carmichael/Parker", "phone": "919-843-5499"},
+    "teague":       {"desk": "Carmichael/Parker", "phone": "919-843-5499"},
+    "cobb":         {"desk": "Cobb, Stacy, Everett", "phone": "919-843-5527"},
+    "stacy":        {"desk": "Cobb, Stacy, Everett", "phone": "919-843-5527"},
+    "everett":      {"desk": "Cobb, Stacy, Everett", "phone": "919-843-5527"},
+    "alexander":    {"desk": "Connor", "phone": "919-843-5530"},
+    "connor":       {"desk": "Connor", "phone": "919-843-5530"},
+    "joyner":       {"desk": "Connor", "phone": "919-843-5530"},
+    "winston":      {"desk": "Connor", "phone": "919-843-5530"},
+    "craige north": {"desk": "Manning West", "phone": "919-445-1758"},
+    "hardin":       {"desk": "Manning West", "phone": "919-445-1758"},
+    "manning west": {"desk": "Manning West", "phone": "919-445-1758"},
+    "craige":       {"desk": "Craige", "phone": "919-843-5562"},
+    "ehringhaus":   {"desk": "Ehringhaus", "phone": "919-843-5578"},
+    "granville":    {"desk": "Granville Towers", "phone": "919-316-9338"},
+    "hinton james": {"desk": "Hinton James", "phone": "919-843-5621"},
+    "alderman":     {"desk": "Kenan", "phone": "919-843-5624"},
+    "kenan":        {"desk": "Kenan", "phone": "919-843-5624"},
+    "mciver":       {"desk": "Kenan", "phone": "919-843-5624"},
+    "spencer":      {"desk": "Kenan", "phone": "919-843-5624"},
+    "old east":     {"desk": "Kenan", "phone": "919-843-5624"},
+    "old west":     {"desk": "Kenan", "phone": "919-843-5624"},
+    "morrison":     {"desk": "Morrison", "phone": "919-843-5707"},
+    "ram village":  {"desk": "Ram Village", "phone": "919-843-5759"},
+    "taylor":       {"desk": "Ram Village", "phone": "919-843-5759"},
+    "graham":       {"desk": "Upper and Lower Quad", "phone": "919-843-5792"},
+    "lewis":        {"desk": "Upper and Lower Quad", "phone": "919-843-5792"},
+    "mangum":       {"desk": "Upper and Lower Quad", "phone": "919-843-5792"},
+    "manly":        {"desk": "Upper and Lower Quad", "phone": "919-843-5792"},
+    "mcclinton":    {"desk": "Upper and Lower Quad", "phone": "919-843-5792"},
+    "ruffin":       {"desk": "Upper and Lower Quad", "phone": "919-843-5792"}
+  }
+}
