@@ -7,11 +7,16 @@ client = OpenAI(
     api_key="not-needed"
 )
 
+while True:
 
-user_prompt = input("You: ")
+    user_prompt = input("You: ")
+    
+    if user_prompt.lower() in ["exit", "quit"]:
+        print("Exiting the chat. Goodbye!")
+        break
 
-# Ask Nemotron a test question
-response = client.chat.completions.create(
+    # Ask Nemotron a test question
+    response = client.chat.completions.create(
     model="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
     messages=[
         {
@@ -33,9 +38,7 @@ response = client.chat.completions.create(
 )
 
 # Display Nemotron's response
-message = response.choices[0].message
-#print("=== NEMOTRON RESPONSE ===")
-print("Nemotron: ")
-print(message.content)
-
-print("Finish reason:", response.choices[0].finish_reason)
+    message = response.choices[0].message
+    #print("=== NEMOTRON RESPONSE ===")
+    print("Nemotron: ")
+    print(message.content)
