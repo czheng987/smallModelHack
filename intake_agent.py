@@ -4,6 +4,7 @@ from openai import OpenAI
 # also import safety_agent.py to use the review_conversation function
 from safety_agent import review_conversation
 from resource_intake import get_resource_needs
+from schedule_intake import get_schedule_needs
 
 
 # Connect to Nemotron running on the Brev server
@@ -11,9 +12,8 @@ client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
     api_key="not-needed"
 )
-INTAKE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+INTAKE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
 
-conversation = []
 handoff = "none"
 
 while True:
@@ -26,58 +26,31 @@ while True:
         break
     
     # Continue keyword skips the rest of code and jumps to the start of the loop
-    if user_need.lower() not in ["schedule", "resource"]:
+    if user_need.lower() not in ["schedule", "resource", "both"]:
         print("Invalid input. Please type 'schedule' or 'resource'.")
         continue
     
     if user_need.lower() == "resource":
-        print("Okay, let's help you with your resource!")
+        print("Okay, let's help you with your schedule!")
         handoff = "Resource"
         print(get_resource_needs())
         break
     
+    if user_need.lower() == "schedule":
+            print("Okay, let's help you with your schedule!")
+            handoff = "schedule"
+            print(get_schedule_needs())
+            break
     
-    
-    
-    
-    user_prompt = input("You: ")
-    if user_prompt.lower() in ["exit", "quit"]:
-        print("Exiting the chat. Goodbye!")
-        break
-    
-    if user_prompt.lower() in ["done", "continue"]:
-        print("Okay, let's help you with your schedule!")
-        handoff = "Safety"
-        break
-
-    # Ask Nemotron a test question
-    response = client.chat.completions.create(
-    model=INTAKE_MODEL,
-    messages=[
-        {
-            "role": "system",
-            "content": (
-                "You are a supportive AI assistant for college students. "
-                "Give practical, encouraging, and concise advice."
-            )
-        },
-        {
-            "role": "user",
-            "content": (
-                user_prompt
-            )
-        }
-    ],
-    max_tokens=1500,
-    temperature=0.7
-)
-
-# Display Nemotron's response
-    message = response.choices[0].message
+    if user_need.lower() == "both":
+            print("Okay, let's help you with both!")
+            handoff = "Resource"
+            print(get_resource_needs())
+            print(get_schedule_needs())
+            break
+   
     #print("=== NEMOTRON RESPONSE ===")
-    print("Nemotron: ")
-    print(message.content)
-    conversation.append({"user": user_prompt, "assistant": message.content})
+   
     
     
 # if handoff:
