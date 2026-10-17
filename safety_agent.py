@@ -4,6 +4,7 @@ client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
     api_key="not-needed",
 )
+SAFETY_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
 
  # Define the function to review the conversation for safety and appropriateness
 def review_conversation(conversation):
@@ -13,7 +14,7 @@ def review_conversation(conversation):
     )
 
     response = client.chat.completions.create(
-        model="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+        model=SAFETY_MODEL,
         messages=[
             {
                 "role": "system",
