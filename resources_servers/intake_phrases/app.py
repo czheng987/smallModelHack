@@ -56,6 +56,12 @@ def score_votes(message: str, votes: list[Optional[tuple[list[str], list[str]]]]
     return _score_with_gym(message, votes)
 
 
+def run_gym_servers(message, schedule, resource, count):
+    """Run count NeMo Gym servers on one phrase split. Does not call a model."""
+    vote = (list(schedule or []), list(resource or []))
+    return score_votes(message, [vote] * count)
+
+
 if SimpleResourcesServer is not None:
 
     class IntakePhraseResourcesServerConfig(BaseResourcesServerConfig):
@@ -154,11 +160,11 @@ if SimpleResourcesServer is not None:
         )
 
     def _score_with_gym(message: str, votes):
-        server = load_server()
+        """One NeMo Gym server per vote. The model is not called here."""
+        servers = [load_server() for _ in votes]
 
         async def _verify_all():
-            responses = []
-            for vote in votes:
+            async def _one(server, vote):
                 if vote is None:
                     schedule, resource, answered = [], [], False
                 else:
@@ -171,14 +177,15 @@ if SimpleResourcesServer is not None:
                     resource=resource,
                     answered=answered,
                 )
-                responses.append(await server.verify(body))
-            return responses
+                return await server.verify(body)
+
+            return await asyncio.gather(*[_one(server, vote) for server, vote in zip(servers, votes)])
 
         responses = asyncio.run(_verify_all())
-        metrics = server.compute_metrics([[item.model_dump() for item in responses]])
+        metrics = servers[0].compute_metrics([[item.model_dump() for item in responses]])
         rate = float(metrics["pass@1"])
         if rate >= PASS_RATE:
-            return True, list(server.last_schedule), list(server.last_resource), rate
+            return True, list(servers[0].last_schedule), list(servers[0].last_resource), rate
         return False, [], [], rate
 
     if __name__ == "__main__":

@@ -1,11 +1,11 @@
-"""Ask the NeMo Gym intake_phrases server to score sample messages.
+"""Ask NeMo Gym to run one server per phrase vote.
 
-The pass rate comes from that server's verify() and compute_metrics(), not from
-a separate checker. Run: python phrase_gym.py
+The model is not called 100 times. Each vote is one NeMo Gym resources server.
+Run: python phrase_gym.py
 """
 
 from phrase_check import PASS_RATE, SERVER_COUNT, propose_split
-from resources_servers.intake_phrases.app import score_votes
+from resources_servers.intake_phrases.app import run_gym_servers, score_votes
 
 # Messages the servers must phrase the same way.
 CASES = [
@@ -19,17 +19,14 @@ CASES = [
 ]
 
 
-def votes_for(message, count=None):
-    """Same split from every server. A stable phrasing agrees with itself."""
-    split = propose_split(message)
-    return [split for _ in range(count or SERVER_COUNT)]
-
-
 def main():
     print(f"NeMo Gym servers: {SERVER_COUNT}")
     print(f"Required pass@1: {PASS_RATE:.0%}")
     for message in CASES:
-        ok, _schedule, _resource, rate = score_votes(message, votes_for(message))
+        schedule, resource = propose_split(message)
+        ok, _schedule, _resource, rate = run_gym_servers(
+            message, schedule, resource, SERVER_COUNT
+        )
         print(f"{rate:.0%}  {message}")
         if not ok:
             print("NeMo Gym did not accept this split.")

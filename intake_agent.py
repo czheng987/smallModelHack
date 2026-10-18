@@ -1,11 +1,10 @@
 import json
-import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from phrase_check import PASS_RATE, SERVER_COUNT, arrange_phrases
-from resources_servers.intake_phrases.app import score_votes
+from resources_servers.intake_phrases.app import run_gym_servers
 from resource_intake import get_resource_needs
 from schedule_intake import format_runtime, get_schedule_needs
 from vllm_model import (
@@ -17,8 +16,6 @@ from vllm_model import (
 )
 
 
-# A little variation so the servers can disagree when the phrasing is unstable.
-PHRASE_TEMPERATURE = float(os.environ.get("PHRASE_TEMPERATURE", "0.2"))
 INTAKE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
 # vLLM returns short phrases with thinking off. The original server thinks
 # through each vote on its own, which is the slower run we time for "before".
@@ -119,17 +116,15 @@ def _vote_from_message(message):
     return arrange_phrases(schedule, resource)
 
 
-def _create_phrase(model_client, user_text, max_tokens, thinking, samples=1):
-    """One completion. samples > 1 asks vLLM to draw the whole vote in one call."""
+def _create_phrase(model_client, user_text, max_tokens, thinking):
+    """One model call. The 100-server check belongs to NeMo Gym, not this call."""
     request = {
         "model": INTAKE_MODEL,
         "messages": _phrase_messages(user_text),
         "max_tokens": max_tokens,
-        "temperature": PHRASE_TEMPERATURE,
+        "temperature": 0,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": thinking}},
     }
-    if samples > 1:
-        request["n"] = samples
     try:
         return model_client.chat.completions.create(**request)
     except TypeError:
@@ -141,82 +136,38 @@ def _create_phrase(model_client, user_text, max_tokens, thinking, samples=1):
         status = getattr(error, "status_code", None)
         if status not in (400, 422):
             raise
-        if samples > 1:
-            raise _BatchUnsupported(error)
         request.pop("extra_body", None)
         return model_client.chat.completions.create(**request)
 
 
-class _BatchUnsupported(Exception):
-    """The server accepted a single reply and rejected n=100."""
-
-
-def _one_vote(model_client, user_text, max_tokens, thinking):
-    response = _create_phrase(model_client, user_text, max_tokens, thinking, samples=1)
+def _one_phrase(model_client, user_text, max_tokens, thinking):
+    response = _create_phrase(model_client, user_text, max_tokens, thinking)
     return _vote_from_message(response.choices[0].message)
 
 
-def votes_batched(model_client, user_text, count):
-    """All votes in one vLLM call. Fan out only if this server rejects n."""
-    try:
-        response = _create_phrase(
-            model_client, user_text, VLLM_PHRASE_TOKENS, thinking=False, samples=count
-        )
-    except _BatchUnsupported:
-        return votes_parallel(model_client, user_text, count)
-    choices = list(response.choices or [])
-    if len(choices) < count:
-        return votes_parallel(model_client, user_text, count)
-    return [_vote_from_message(choice.message) for choice in choices[:count]]
-
-
-def votes_parallel(model_client, user_text, count):
-    """Short votes at the same time, used when one batched call is not available."""
-    def _vote(_index):
-        try:
-            return _one_vote(model_client, user_text, VLLM_PHRASE_TOKENS, thinking=False)
-        except Exception:
-            return None
-
-    with ThreadPoolExecutor(max_workers=count) as pool:
-        return list(pool.map(_vote, range(count)))
-
-
-def votes_sequential(model_client, user_text, count):
-    """One vote at a time on the original server, with thinking left on."""
-    votes = []
-    for _ in range(count):
-        try:
-            votes.append(
-                _one_vote(model_client, user_text, UNASSISTED_PHRASE_TOKENS, thinking=True)
-            )
-        except Exception as error:
-            votes.append(None)
-            if unreachable(error):
-                break
-    votes.extend([None] * (count - len(votes)))
-    return votes
-
-
-def timed_vllm_votes(user_text):
-    """Phrase on vLLM. A closed port is not included in the runtime."""
+def timed_vllm_phrase(user_text):
+    """One phrasing on vLLM. A closed port is not included in the runtime."""
     for url in planner_urls():
         started = time.perf_counter()
         try:
-            votes = votes_batched(open_client(url), user_text, SERVER_COUNT)
+            schedule, resource = _one_phrase(
+                open_client(url), user_text, VLLM_PHRASE_TOKENS, thinking=False
+            )
         except Exception as error:
             if not unreachable(error):
                 raise
             continue
-        return votes, time.perf_counter() - started, True
-    return [None] * SERVER_COUNT, 0.0, False
+        return schedule, resource, time.perf_counter() - started, True
+    return [], [], 0.0, False
 
 
 def timed_unassisted(user_text):
-    """Time the same votes one by one, without the vLLM batch."""
+    """Time one phrasing on the original server, with thinking left on."""
     started = time.perf_counter()
     try:
-        votes_sequential(open_client(NEMOTRON_BASE_URL), user_text, SERVER_COUNT)
+        _one_phrase(
+            open_client(NEMOTRON_BASE_URL), user_text, UNASSISTED_PHRASE_TOKENS, thinking=True
+        )
     except Exception:
         pass
     return time.perf_counter() - started
@@ -231,12 +182,12 @@ def print_phrase_runtimes(without_seconds, with_seconds, reached):
 
 
 def split_request(user_text):
-    """Phrase the message with vLLM and keep it only when the servers agree."""
-    print(f"Checking this phrasing across {SERVER_COUNT} servers with Red Hat vLLM.")
-    votes, with_seconds, reached = timed_vllm_votes(user_text)
-    print(f"Timing the same {SERVER_COUNT} votes on the original server, one at a time.")
+    """Phrase once with the model, then let NeMo Gym run the 100 servers."""
+    schedule, resource, with_seconds, reached = timed_vllm_phrase(user_text)
+    print("Timing one phrasing on the original server.")
     without_seconds = timed_unassisted(user_text)
-    ok, schedule, resource, rate = score_votes(user_text, votes)
+    print(f"NeMo Gym is running {SERVER_COUNT} servers on this phrasing.")
+    ok, schedule, resource, rate = run_gym_servers(user_text, schedule, resource, SERVER_COUNT)
     if ok:
         print(
             f"Phrase check passed at {rate:.0%} agreement "
