@@ -767,9 +767,11 @@ def with_clock(session, text):
     return session
 
 
-def sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now=None, guidance=None):
+def sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now=None, guidance=None, heavy=False):
     """Turn one phrase into one sitting or several chunks across the named timeline."""
     del today_name  # dates come from the message clock, not the weekday name alone
+    if heavy:
+        return heavy_sessions(phrase, stressed, deadline_notes, now)
     label = task_label(phrase)
     end, specific, source = phrase_horizon(phrase, deadline_notes, now)
     kind = activity_kind(phrase)
@@ -816,17 +818,77 @@ def sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now=None, 
     return sessions_from_loads(loads, label, chunk_minutes)
 
 
+HEAVY_TASKS = 10
+
+
+def decision_token_budget(count):
+    """One short object per task. A long list still fits, without writing every block."""
+    if count < HEAVY_TASKS:
+        return 160
+    return min(1200, 48 * count)
+
+
+def calendar_token_budget(count):
+    """The unassisted server writes every block, so a long list costs many more tokens."""
+    if count < HEAVY_TASKS:
+        return 700
+    return min(3200, 160 * count)
+
+
+def heavy_latest(task_count, end, specific):
+    """Enough days for every task. A deadline that is too soon still keeps the overflow."""
+    needed = max(0, (task_count + 3) // 4 - 1)
+    if specific and end + 1 >= (task_count + 3) // 4:
+        return end
+    if specific:
+        return max(end, needed)
+    return needed
+
+
+def heavy_sessions(phrase, stressed, deadline_notes, now):
+    """Compile a heavy list into a few sittings per task so nothing is dropped."""
+    label = task_label(phrase)
+    end, specific, source = phrase_horizon(phrase, deadline_notes, now)
+    kind = activity_kind(phrase)
+    minutes = 25 if stressed else MAX_WORK_MINUTES
+    once_minutes = MAX_WORK_MINUTES if ONE_TIME_EVENT.search(phrase) else minutes
+    studying = bool(STUDY_WORD.search(phrase) and EXAM_WORD.search(phrase))
+    if kind == "once":
+        return [with_clock({"offset": 0, "task": label, "minutes": once_minutes}, source)]
+    event = re.sub(r"^study for\s+", "", label, flags=re.IGNORECASE)
+    if kind == "exam" or studying:
+        days = list(range(end)) if end > 0 else [0]
+        task = f"Study for {event}"
+    else:
+        days = list(range(end + 1)) or [0]
+        task = label
+    chosen = pick_days(days, min(2, len(days)))
+    if len(chosen) <= 1:
+        loads = [(chosen[0], 2)]
+    else:
+        loads = [(day, 1) for day in chosen]
+    sessions = sessions_from_loads(loads, task, minutes)
+    if (kind == "exam" or studying) and end > 0:
+        sessions.append(with_clock({"offset": end, "task": event, "minutes": minutes}, source))
+    return sessions
+
+
 def guidance_for(phrase, guidance):
     """The vLLM decision for this task, matched by the student's own words."""
     if not guidance:
         return None
+    phrase_tokens = significant_tokens(phrase)
+    best = None
+    best_score = 0
     for item in guidance:
         if not isinstance(item, dict):
             continue
         name = item.get("task") or item.get("name") or ""
-        if shares_task(name, phrase):
-            return item
-    return None
+        score = len(phrase_tokens & significant_tokens(name))
+        if score > best_score:
+            best = item
+            best_score = score
+    return best
 
 
 def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None, guidance=None):
@@ -847,6 +909,7 @@ def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None, guidanc
 
     today_name, now_minutes = current_moment(now)
     day_limit = 2 * 60 if stressed else MAX_WORK_PER_DAY
+    heavy = len(phrases) >= HEAVY_TASKS
     days = {}
 
     def ensure(label, offset):
@@ -904,16 +967,34 @@ def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None, guidanc
             current += 1
         return False
 
-    for phrase in phrases:
+    ordered_phrases = phrases
+    if heavy:
+        def sort_key(phrase):
+            end, specific, source = phrase_horizon(phrase, deadline_notes, now)
+            _, end_by = clock_limit(source)
+            return (0 if end_by is not None else 1, end if specific else MAX_PLAN_DAYS)
+        ordered_phrases = sorted(phrases, key=sort_key)
+
+    for phrase in ordered_phrases:
         kind = activity_kind(phrase)
-        end, _specific, _source = phrase_horizon(phrase, deadline_notes, now)
+        end, specific, _source = phrase_horizon(phrase, deadline_notes, now)
         for session in sessions_for_phrase(
-            phrase, stressed, deadline_notes, today_name, now, guidance=guidance_for(phrase, guidance)
+            phrase,
+            stressed,
+            deadline_notes,
+            today_name,
+            now,
+            guidance=guidance_for(phrase, guidance),
+            heavy=heavy,
         ):
             at_time = session.get("at")
             by_time = session.get("by")
             if at_time is not None or by_time is not None:
                 latest = session["offset"]
+            elif heavy and kind == "once":
+                latest = heavy_latest(len(phrases), end, specific)
+            elif heavy:
+                latest = max(session["offset"], end)
             elif kind == "once":
                 latest = min(session["offset"] + 2, MAX_PLAN_DAYS)
             elif session["task"].startswith("Study for "):
@@ -1041,7 +1122,12 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                     "Do not squeeze a multi-day deadline into one day, and do not spread study so thin "
                     "that a day has only one short block.\n"
                     "Use only the tasks they named. Do not diagnose a mental illness.\n"
-                    "Return JSON only:\n"
+                    + (
+                        "This is a heavy workload. Return one object for every task. Do not skip any.\n"
+                        if len(schedule) >= HEAVY_TASKS
+                        else ""
+                    )
+                    + "Return JSON only:\n"
                     '{"tasks":[{"task":"<student task>","repeat":true,"split":true,"sessions_per_day":2,"days":3}]}'
                 ),
             },
@@ -1055,7 +1141,7 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                 ),
             },
         ],
-        "max_tokens": 160,
+        "max_tokens": decision_token_budget(len(schedule)),
         "temperature": 0.2,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     }
@@ -1091,7 +1177,8 @@ def ask_unassisted(schedule, deadline_notes, stressed, now=None):
                     f"The student is messaging you on {weekday} at {clock}.\n"
                     f"{load}\n"
                     "Put a 10 minute break between work blocks. Do not overlap blocks. "
-                    "Stay between 9:00 AM and 9:00 PM. Use only the student's tasks.\n"
+                    "Stay between 9:00 AM and 9:00 PM. Use only the student's tasks. "
+                    "A long list still needs a block for every task.\n"
                     "Return JSON only:\n"
                     '{"days":[{"day":"Sunday, Oct 18","blocks":[{"start":"09:00","end":"09:45","task":"<student task>"}]}]}'
                 ),
@@ -1105,7 +1192,7 @@ def ask_unassisted(schedule, deadline_notes, stressed, now=None):
                 ),
             },
         ],
-        "max_tokens": 700,
+        "max_tokens": calendar_token_budget(len(schedule)),
         "temperature": 0.2,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
     }
@@ -1157,6 +1244,8 @@ def get_schedule_needs(schedule):
     print("Schedule intake is reading schedule[]:")
     for phrase in schedule:
         print(f"- {phrase}")
+    if len(schedule) >= HEAVY_TASKS:
+        print(f"Heavy workload: vLLM is compiling {len(schedule)} tasks into one schedule.")
 
     weekday, now_minutes = current_moment(moment)
     print(f"Planning from {format_plan_day(moment, 0)} at {minutes_to_clock(now_minutes)}.")
