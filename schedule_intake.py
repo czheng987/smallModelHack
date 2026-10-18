@@ -38,20 +38,36 @@ def clean_phrases(schedule):
 
 
 def message_text(message):
+    chunks = []
     content = message.content or ""
     if isinstance(content, list):
         content = " ".join(
             part.get("text", "") if isinstance(part, dict) else str(part)
             for part in content
         )
-    return content
+    if content:
+        chunks.append(content)
+    extra = getattr(message, "model_extra", None) or {}
+    if isinstance(extra, dict):
+        for key in ("reasoning_content", "reasoning"):
+            value = extra.get(key)
+            if isinstance(value, str) and value.strip():
+                chunks.append(value)
+    return "\n".join(chunks)
 
 
 def clock_to_minutes(value):
-    match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value).strip())
+    text = str(value).strip().lower().replace(".", "")
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*(am|pm)?", text)
     if not match:
         return None
-    hour, minute = int(match.group(1)), int(match.group(2))
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    suffix = match.group(3)
+    if suffix == "pm" and hour < 12:
+        hour += 12
+    if suffix == "am" and hour == 12:
+        hour = 0
     if hour > 23 or minute > 59:
         return None
     return hour * 60 + minute
@@ -78,11 +94,18 @@ def normalize_plan(raw_days, stressed=False):
         label = str(day.get("day") or "Today").strip() or "Today"
         blocks = []
         for block in day.get("blocks") or []:
+            if isinstance(block, str):
+                block = {"task": block}
             if not isinstance(block, dict):
                 continue
-            start = clock_to_minutes(block.get("start"))
-            end = clock_to_minutes(block.get("end"))
-            task = " ".join(str(block.get("task") or "").split())
+            start = clock_to_minutes(block.get("start") or block.get("start_time"))
+            end = clock_to_minutes(block.get("end") or block.get("end_time"))
+            if start is None and isinstance(block.get("time"), str) and "-" in block["time"]:
+                left, right = block["time"].split("-", 1)
+                start = clock_to_minutes(left)
+                end = clock_to_minutes(right)
+            task = block.get("task") or block.get("name") or block.get("title") or block.get("activity") or ""
+            task = " ".join(str(task).split())
             if not task:
                 continue
             is_break = "break" in task.lower()
@@ -144,18 +167,50 @@ def render_plan(plan):
     return "\n".join(lines).strip()
 
 
-def parse_plan(reply, stressed=False):
-    text = reply or ""
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
-        return []
-    try:
-        data = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return []
+def load_json_value(text):
+    """Pull the first JSON object or list out of a model reply."""
+    text = re.sub(r"<think>.*?</think>", " ", text or "", flags=re.DOTALL | re.IGNORECASE)
+    text = text.replace("```json", "").replace("```", "")
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "{[":
+            continue
+        snippet = re.sub(r",\s*([}\]])", r"\1", text[index:])
+        try:
+            data, _ = decoder.raw_decode(snippet)
+        except json.JSONDecodeError:
+            continue
+        return data
+    return None
+
+
+def days_from_reply(data):
+    if isinstance(data, list):
+        return data
     if not isinstance(data, dict):
         return []
-    return normalize_plan(data.get("days"), stressed=stressed)
+    for key in ("days", "schedule", "plan"):
+        if isinstance(data.get(key), list):
+            return data[key]
+    if any(key in data for key in ("blocks", "task", "name", "title")):
+        return [data]
+    return []
+
+
+def parse_plan(reply, stressed=False):
+    data = load_json_value(reply)
+    return normalize_plan(days_from_reply(data), stressed=stressed)
+
+
+def plan_from_phrases(schedule, stressed):
+    """Build a usable plan when the model reply cannot be read."""
+    blocks = []
+    for phrase in schedule:
+        blocks.append({"task": phrase})
+        blocks.append({"task": "Break"})
+    if blocks:
+        blocks.pop()
+    return normalize_plan([{"day": "Today", "blocks": blocks}], stressed=stressed)
 
 
 DEADLINE_HINT = re.compile(
@@ -269,11 +324,10 @@ def get_schedule_needs(schedule):
         plan = parse_plan(reply, stressed=stressed)
     except Exception as error:
         print(f"The schedule planner could not be reached: {error}")
-        return ""
+        plan = []
 
     if not plan:
-        print("I could not build a schedule from those tasks.")
-        return ""
+        plan = plan_from_phrases(schedule, stressed)
 
     rendered = render_plan(plan)
     if not release_response("\n".join(schedule), rendered):
