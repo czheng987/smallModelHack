@@ -236,6 +236,7 @@ def asks_for_resources(phrases):
         "phone number",
         "someone to talk",
         "someone i can talk",
+        "do you know",
     )
     return any(marker in text for marker in markers)
 
