@@ -6,19 +6,6 @@ from openai import OpenAI
 
 from safety_agent import print_safety_result, review_conversation
 
-CRISIS_KEYWORDS = (
-    "kill myself", "end my life", "want to die", "suicide", "suicidal",
-    "hurt myself", "self harm", "self-harm",
-    "following me", "being followed", "not safe", "unsafe", "in danger",
-    "unalive", "stab myself",
-)
-
-
-def has_crisis_keyword(text):
-    """Backup crisis check that does not depend on a safety_agent helper."""
-    lowered = text.lower()
-    return any(phrase in lowered for phrase in CRISIS_KEYWORDS)
-
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
     api_key="not-needed",
@@ -259,7 +246,7 @@ def release_response(student_text, response_text):
         {"user": student_text, "assistant": response_text},
     ])
     print_safety_result(result)
-    return result.get("allow", True)
+    return not result.get("crisis", False)
 
 
 def get_resource_needs(resource):
@@ -270,10 +257,10 @@ def get_resource_needs(resource):
 
     student_text = "\n".join(resource)
     if not asks_for_resources(resource):
-        if has_crisis_keyword(student_text):
-            result = review_conversation([
-                {"user": student_text, "assistant": ""},
-            ])
+        result = review_conversation([
+            {"user": student_text, "assistant": ""},
+        ])
+        if result.get("crisis"):
             print_safety_result(result)
         return []
 
