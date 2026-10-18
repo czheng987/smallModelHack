@@ -1114,11 +1114,12 @@ def get_schedule_needs(schedule):
 
     deadline_notes = collect_deadlines(schedule)
 
-    before_started = time.perf_counter()
+    # One clock for the whole planning run. "Without" stops after the local plan.
+    # "With" keeps going through the vLLM call and the plan built from its decision.
+    program_started = time.perf_counter()
     local_plan = plan_from_phrases(schedule, stressed, deadline_notes, now=moment)
-    before_seconds = time.perf_counter() - before_started
+    before_seconds = time.perf_counter() - program_started
 
-    vllm_started = time.perf_counter()
     reply = ""
     reached = True
     try:
@@ -1126,7 +1127,6 @@ def get_schedule_needs(schedule):
     except Exception as error:
         reached = False
         print(f"The schedule planner could not be reached: {error}")
-    vllm_seconds = time.perf_counter() - vllm_started
 
     plan = local_plan
     if reply:
@@ -1137,9 +1137,10 @@ def get_schedule_needs(schedule):
             )
             if guided:
                 plan = guided
+    with_seconds = time.perf_counter() - program_started
     print(f"Runtime without Red Hat vLLM: {format_runtime(before_seconds)}")
     if reached:
-        print(f"Runtime with Red Hat vLLM: {format_runtime(vllm_seconds)}")
+        print(f"Runtime with Red Hat vLLM: {format_runtime(with_seconds)}")
     else:
         print("Runtime with Red Hat vLLM: unavailable")
     if not plan:
