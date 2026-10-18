@@ -1,0 +1,664 @@
+/* Colors in one place, so they're easy to change (UNC-inspired) */
+.app {
+  --navy: #13294b;
+  --blue: #4b9cd3;
+  --blue-soft: #e8f2fa;
+  --ink: #1f2937;
+  --muted: #5b6474;
+  --line: #dde3ea;
+  --page: #f6f8fb;
+  --red: #b42318;
+  --red-soft: #fef3f2;
+
+  text-align: left;
+  color: var(--ink);
+  background: var(--page);
+  min-height: 100svh;
+  padding: 32px 20px 64px;
+  box-sizing: border-box;
+}
+
+.app h1 {
+  color: var(--navy);
+  font-size: 40px;
+  letter-spacing: -0.5px;
+  margin: 0 0 8px;
+}
+
+.app h2 {
+  color: var(--navy);
+  font-size: 20px;
+  margin: 24px 0 4px;
+}
+
+.app h2:first-child {
+  margin-top: 0;
+}
+
+/* Top bar with the app name */
+.topbar {
+  max-width: 760px;
+  margin: 0 auto 28px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--navy);
+}
+
+.brand-icon {
+  margin-right: 4px;
+}
+
+.tagline {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.header,
+.card {
+  max-width: 760px;
+  margin: 0 auto 20px;
+}
+
+.subtitle {
+  color: var(--muted);
+  font-size: 17px;
+}
+
+/* A white box with rounded corners */
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(19, 41, 75, 0.06);
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+
+/* Topic cards */
+.topics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.topic {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.topic:hover {
+  border-color: var(--blue);
+}
+
+.topic.selected {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--navy);
+  font-weight: 600;
+}
+
+.emoji {
+  font-size: 20px;
+}
+
+/* Text inputs */
+.field-label {
+  display: block;
+  font-weight: 600;
+  color: var(--navy);
+  margin-bottom: 6px;
+}
+
+.app textarea,
+.app input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink);
+  background: #fff;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.app textarea:focus,
+.app input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.deadline-row {
+  display: grid;
+  grid-template-columns: 1fr 170px auto;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.remove {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 6px;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  color: var(--blue);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+/* Main button */
+.primary {
+  display: block;
+  width: 100%;
+  margin-top: 24px;
+  padding: 14px;
+  border: none;
+  border-radius: 12px;
+  background: var(--navy);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  font-size: 17px;
+  cursor: pointer;
+}
+
+.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.error {
+  color: var(--red);
+  margin-top: 12px;
+}
+
+/* "Agents at work" list */
+.agents {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+
+.agents li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  color: var(--muted);
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--line);
+  flex-shrink: 0;
+}
+
+.agents li.done .dot {
+  background: #2e9e5b;
+}
+
+.agents li.active {
+  color: var(--navy);
+}
+
+.agents li.active .dot {
+  background: var(--blue);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Urgent help from the Safety agent */
+.card.urgent {
+  border: 2px solid var(--red);
+  background: var(--red-soft);
+}
+
+.urgent-intro {
+  font-weight: 600;
+  color: var(--red);
+  margin-bottom: 8px;
+}
+
+.urgent-outro {
+  margin-top: 12px;
+}
+
+/* Plan preview and resources */
+.tasks,
+.resources {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+
+.tasks li,
+.resources li {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.tasks li:last-child,
+.resources li:last-child {
+  border-bottom: none;
+}
+
+.when {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.details {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.app a {
+  color: var(--blue);
+}
+
+/* ---------- Tracker ---------- */
+.tracker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.tracker-head h2 {
+  margin: 0;
+}
+
+.tabs {
+  display: flex;
+  background: var(--page);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 3px;
+}
+
+.tab {
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  color: var(--muted);
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: #fff;
+  color: var(--navy);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(19, 41, 75, 0.12);
+}
+
+.progress {
+  margin-bottom: 16px;
+}
+
+.progress-label {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.progress-track {
+  height: 8px;
+  background: var(--line);
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #2e9e5b;
+  border-radius: 99px;
+  transition: width 0.3s;
+}
+
+.view-date {
+  font-weight: 600;
+  color: var(--navy);
+  margin-bottom: 8px;
+}
+
+.task-list,
+.deadline-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.deadline-list li {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--red);
+  padding: 4px 0;
+}
+
+.task {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.task:last-child {
+  border-bottom: none;
+}
+
+.task label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.task input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  accent-color: #2e9e5b;
+  transform: translateY(3px);
+}
+
+.task .time {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 140px;
+}
+
+.task.done .task-title {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.task.break {
+  font-size: 13px;
+  color: var(--muted);
+  padding-left: 28px;
+}
+
+.task.break .time {
+  margin-right: 10px;
+}
+
+/* How long to study (e.g. "2 hrs") */
+.duration {
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--navy);
+  background: var(--blue-soft);
+  border-radius: 99px;
+  padding: 2px 10px;
+}
+
+.task-list.compact .task label {
+  flex-wrap: wrap;
+}
+
+.task-list.compact .duration {
+  margin-left: 28px;
+}
+
+/* Week: 7 columns (scrolls sideways on small screens) */
+.week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(120px, 1fr));
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.day {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+  min-height: 120px;
+}
+
+.day.today {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.day-name {
+  font-weight: 700;
+  color: var(--navy);
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.day-name span {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.task-list.compact .task {
+  font-size: 13px;
+  padding: 6px 0;
+}
+
+.task-list.compact .time {
+  display: none;
+}
+
+.empty {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Month: calendar grid */
+.month-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--navy);
+}
+
+.month-head .link-button {
+  font-size: 24px;
+  padding: 0 10px;
+}
+
+.month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.weekday {
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 4px;
+}
+
+.cell {
+  position: relative;
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 4px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.cell.today {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.cell.selected {
+  outline: 2px solid var(--navy);
+}
+
+.cell-num {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+}
+
+.cell-deadline {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-size: 10px;
+}
+
+.cell-count {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 99px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+}
+
+.cell-count.all-done {
+  background: #2e9e5b;
+}
+
+.month-detail {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- Plan page ---------- */
+.plan-bar {
+  max-width: 760px;
+  margin: 0 auto 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.plan-bar h1 {
+  margin: 0;
+}
+
+.secondary {
+  border: 1.5px solid var(--navy);
+  background: #fff;
+  color: var(--navy);
+  font: inherit;
+  font-weight: 600;
+  font-size: 15px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.secondary:hover {
+  background: var(--blue-soft);
+}
+
+.card.support {
+  border-left: 4px solid var(--blue);
+}
+
+.support-group + .support-group {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.support-intro {
+  font-weight: 600;
+  color: var(--navy);
+  margin: 8px 0 4px;
+}
+
+.note,
+.agent-log {
+  max-width: 760px;
+  margin: 0 auto 12px;
+}
+
+.agent-log summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+@media (max-width: 600px) {
+  .app h1 {
+    font-size: 30px;
+  }
+
+  .deadline-row {
+    grid-template-columns: 1fr;
+  }
+
+  .task .time {
+    min-width: 0;
+  }
+
+  .task label {
+    flex-wrap: wrap;
+  }
+}

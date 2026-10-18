@@ -84,6 +84,9 @@
     {"name": "Your academic advisor or major department", "details": "They can connect you with campus support and help with class deadlines while you get through this"},
     {"name": "Office of Scholarships and Student Aid", "link": "https://studentaid.unc.edu", "details": "Reach out if money problems are affecting your food or housing"},
     {"name": "Carolina Covenant (for Covenant Scholars)", "link": "https://studentaid.unc.edu/carolina-covenant/", "details": "Your Covenant team can help connect you with support"}
-  ]
+  ],
 
+  "career": [
+    {"name": "University Career Services (UCS)", "phone": "919-962-6507", "link": "https://careers.unc.edu/students/schedule-an-appointment", "details": "Book a 45-minute mock interview on Handshake (log in with your ONYEN), virtual or in person at Hanes Hall 219. Drop-ins: Mon-Thu 2-4pm, Fri 11am-12pm"}
+  ]
 }
