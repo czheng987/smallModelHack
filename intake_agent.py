@@ -1,4 +1,8 @@
+import builtins
+import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from openai import OpenAI
 
@@ -14,7 +18,9 @@ client = OpenAI(
 INTAKE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
 
 handoff = "none"
-ROUTES = {"resource", "schedule", "both", "none"}
+_input_lock = threading.Lock()
+_phrases_by_thread = {}
+_real_input = builtins.input
 
 
 def message_text(message):
@@ -37,50 +43,77 @@ def message_text(message):
     return "\n".join(chunks)
 
 
-def parse_route(reply):
-    """Pull resource, schedule, both, or none out of a normal model reply."""
+def phrase_list(value):
+    """Keep only non-empty phrase strings."""
+    if not isinstance(value, list):
+        return []
+    phrases = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        phrase = " ".join(item.split())
+        if phrase:
+            phrases.append(phrase)
+    return phrases
+
+
+def parse_phrase_lists(reply):
+    """Read schedule[] and resource[] from Nemotron's JSON reply."""
     text = re.sub(
         r"<think>.*?</think>",
         " ",
         reply or "",
         flags=re.DOTALL | re.IGNORECASE,
     )
-    lines = [line.strip() for line in text.splitlines() if line.strip()] or [text.strip()]
-    for line in reversed(lines):
-        words = re.findall(r"\b(resource|schedule|both|none)\b", line.lower())
-        if not words:
-            continue
-        if len(words) == 1:
-            return words[0]
-        labels = set(words)
-        if "both" in labels or {"resource", "schedule"} <= labels:
-            return "both"
-        return words[-1]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end <= start:
+        return [], []
+    try:
+        data = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return [], []
+    if not isinstance(data, dict):
+        return [], []
+    return phrase_list(data.get("schedule")), phrase_list(data.get("resource"))
+
+
+def assign_type(schedule, resource):
+    """Name the route from whichever phrase arrays contain something."""
+    if schedule and resource:
+        return "both"
+    if schedule:
+        return "schedule"
+    if resource:
+        return "resource"
     return "none"
 
 
-def assign_request(user_text):
-    """Ask Nemotron which intake the student's request belongs to."""
+def split_request(user_text):
+    """Break the student's message into schedule phrases and mental-health resource phrases."""
     messages = [
         {
             "role": "system",
             "content": (
-                "You route a UNC student's request by its meaning. "
-                "The student will usually not say the words resource or schedule. "
-                "Reply with exactly one word: resource, schedule, both, or none.\n"
-                "resource: campus help, counseling, someone to talk to, library databases, articles, or other campus services.\n"
-                "schedule: classes, study time, exams, deadlines, workload, or planning the week.\n"
-                "both: the student needs campus help and help planning their time.\n"
-                "none: greetings, thanks, jokes, or anything that is not campus help or time planning.\n"
+                "Break a UNC student's message into short phrases from their own words. "
+                "Return JSON only, with two arrays:\n"
+                '{"schedule": ["phrase"], "resource": ["phrase"]}\n'
+                "schedule stores phrases about a scheduling problem: classes, exams, deadlines, "
+                "study time, workload, or planning the week.\n"
+                "resource stores phrases about needing mental health support: wanting someone to "
+                "talk to, counseling, campus mental health resources, or feeling overwhelmed and "
+                "asking for help. Do not diagnose. Do not name a disorder.\n"
+                "Put each phrase in only one array. Leave an array empty when the message has "
+                "nothing for that side.\n"
                 "Examples:\n"
-                "Student: I have a chem midterm Thursday and I don't know what to do tonight\n"
-                "schedule\n"
-                "Student: Where can I find psychology articles from my apartment?\n"
-                "resource\n"
-                "Student: I need sources for my essay and a plan to finish it before Friday\n"
-                "both\n"
-                "Student: hello\n"
-                "none"
+                "Student: I have three papers due Friday and I need someone to talk to\n"
+                '{"schedule": ["three papers due Friday"], "resource": ["I need someone to talk to"]}\n'
+                "Student: Where can I find counseling on campus?\n"
+                '{"schedule": [], "resource": ["find counseling on campus"]}\n'
+                "Student: Can you help me plan study time around my labs?\n"
+                '{"schedule": ["plan study time around my labs"], "resource": []}\n'
+                "Student: thanks\n"
+                '{"schedule": [], "resource": []}'
             ),
         },
         {
@@ -92,7 +125,7 @@ def assign_request(user_text):
         response = client.chat.completions.create(
             model=INTAKE_MODEL,
             messages=messages,
-            max_tokens=64,
+            max_tokens=400,
             temperature=0,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
@@ -112,11 +145,66 @@ def assign_request(user_text):
             max_tokens=800,
             temperature=0,
         )
-    reply = message_text(response.choices[0].message)
-    route = parse_route(reply)
-    if route not in ROUTES:
-        return "none"
-    return route
+    return parse_phrase_lists(message_text(response.choices[0].message))
+
+
+def _patched_input(prompt=""):
+    """Give each intake the phrases split from the original message, then read the keyboard."""
+    with _input_lock:
+        phrases = _phrases_by_thread.get(threading.get_ident())
+        if phrases:
+            phrase = phrases.pop(0)
+            print(f"{prompt}{phrase}")
+            return phrase
+        return _real_input(prompt)
+
+
+def _run_intake(intake, phrases):
+    _phrases_by_thread[threading.get_ident()] = list(phrases)
+    try:
+        intake()
+    finally:
+        _phrases_by_thread.pop(threading.get_ident(), None)
+
+
+def run_intakes(schedule, resource):
+    """Start the intakes whose phrase arrays have something. Both run together when both do."""
+    jobs = []
+    if resource:
+        jobs.append((get_resource_needs, resource))
+    if schedule:
+        jobs.append((get_schedule_needs, schedule))
+    if not jobs:
+        return
+
+    builtins.input = _patched_input
+    try:
+        if len(jobs) == 1:
+            _run_intake(jobs[0][0], jobs[0][1])
+            return
+        print("Starting resource intake and schedule intake at the same time.")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(_run_intake, intake, phrases) for intake, phrases in jobs]
+            for future in futures:
+                future.result()
+    finally:
+        builtins.input = _real_input
+        _phrases_by_thread.clear()
+
+
+def show_phrases(schedule, resource):
+    print("schedule[]:")
+    if schedule:
+        for phrase in schedule:
+            print(f"- {phrase}")
+    else:
+        print("- (empty)")
+    print("resource[]:")
+    if resource:
+        for phrase in resource:
+            print(f"- {phrase}")
+    else:
+        print("- (empty)")
 
 
 def main():
@@ -128,23 +216,23 @@ def main():
             print("Exiting the chat. Goodbye!")
             break
 
-        # Nemotron reads the request and assigns resource, schedule, both, or none.
-        route = assign_request(user_need)
+        schedule, resource = split_request(user_need)
+        route = assign_type(schedule, resource)
+        show_phrases(schedule, resource)
         print(f"Assigned: {route}")
 
         if route == "none":
-            print("I can help with campus resources, your schedule, or both. Tell me a bit more about what you need.")
+            print("I can help with a scheduling problem, mental health resources, or both. Tell me a bit more about what you need.")
             continue
 
-        if route in ("resource", "both"):
-            print("Okay, let's help you with your resources!")
+        if route == "resource":
             handoff = "Resource"
-            get_resource_needs()
-
-        if route in ("schedule", "both"):
-            print("Okay, let's help you with your schedule!")
+        elif route == "schedule":
             handoff = "Safety"
-            get_schedule_needs()
+        else:
+            handoff = "both"
+
+        run_intakes(schedule, resource)
 
 
 if __name__ == "__main__":
