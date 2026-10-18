@@ -2,16 +2,11 @@ import json
 import re
 import time
 
-from openai import OpenAI
-
 from safety_agent import print_safety_result, review_conversation
+from vllm_model import VLLM_MODEL, open_client, reply_text
 
-client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
-    api_key="not-needed",
-)
-
-SCHEDULE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+client = open_client()
+SCHEDULE_MODEL = VLLM_MODEL
 
 # A focused block stays short so one task does not take over the day.
 MAX_WORK_MINUTES = 45
@@ -70,25 +65,6 @@ def split_listed_activities(phrases):
             pieces = [part if weekday_of(part) else f"{part} {day}" for part in pieces]
         expanded.extend(pieces)
     return expanded
-
-
-def message_text(message):
-    chunks = []
-    content = message.content or ""
-    if isinstance(content, list):
-        content = " ".join(
-            part.get("text", "") if isinstance(part, dict) else str(part)
-            for part in content
-        )
-    if content:
-        chunks.append(content)
-    extra = getattr(message, "model_extra", None) or {}
-    if isinstance(extra, dict):
-        for key in ("reasoning_content", "reasoning"):
-            value = extra.get(key)
-            if isinstance(value, str) and value.strip():
-                chunks.append(value)
-    return "\n".join(chunks)
 
 
 def clock_to_minutes(value):
@@ -711,9 +687,10 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
         else "The student does not sound especially stressed. Use up to 45 minute blocks "
         "and at most 4 hours of work in a day."
     )
-    response = client.chat.completions.create(
-        model=SCHEDULE_MODEL,
-        messages=[
+    # Thinking stays on for this call. Building a plan takes several steps.
+    request = {
+        "model": SCHEDULE_MODEL,
+        "messages": [
             {
                 "role": "system",
                 "content": (
@@ -721,7 +698,8 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                     "You choose every start and end time. "
                     "The student does not tell you how long each assignment takes. "
                     "Do not ask them for a duration or a start time. "
-                    "Estimate a realistic duration from the task itself.\n"
+                    "Think through the clock, the deadlines, and which tasks are one sitting "
+                    "before you answer. Estimate a realistic duration from the task itself.\n"
                     f"The student is messaging you on {weekday} at {clock}.\n"
                     f"{load}\n"
                     "Rules:\n"
@@ -752,10 +730,21 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                 ),
             },
         ],
-        max_tokens=1200,
-        temperature=0.2,
-    )
-    return message_text(response.choices[0].message)
+        "max_tokens": 4000,
+        "temperature": 0.2,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+    }
+    try:
+        response = client.chat.completions.create(**request)
+    except TypeError:
+        request.pop("extra_body")
+        response = client.chat.completions.create(**request)
+    except Exception as error:
+        if getattr(error, "status_code", None) not in (400, 422):
+            raise
+        request.pop("extra_body", None)
+        response = client.chat.completions.create(**request)
+    return reply_text(response.choices[0].message)
 
 
 def release_response(student_text, response_text):
