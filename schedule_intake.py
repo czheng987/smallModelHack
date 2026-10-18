@@ -909,21 +909,28 @@ def get_schedule_needs(schedule):
 
     deadline_notes = collect_deadlines(schedule)
 
+    vllm_started = time.perf_counter()
+    reply = ""
     try:
         reply = ask_for_plan(schedule, deadline_notes, stressed, now=moment)
-        plan = parse_plan(reply, stressed=stressed, schedule=schedule, now=moment)
     except Exception as error:
         print(f"The schedule planner could not be reached: {error}")
-        plan = []
+    vllm_seconds = time.perf_counter() - vllm_started
 
+    after_started = time.perf_counter()
+    plan = []
+    if reply:
+        plan = parse_plan(reply, stressed=stressed, schedule=schedule, now=moment)
     if not plan:
         plan = plan_from_phrases(schedule, stressed, deadline_notes, now=moment)
+    rendered = render_plan(plan) if plan else ""
+    allowed = release_response("\n".join(schedule), rendered) if plan else False
+    after_seconds = time.perf_counter() - after_started
+    print(f"Runtime: Red Hat vLLM {vllm_seconds:.2f}s, after {after_seconds:.2f}s")
     if not plan:
         print("I don't see an assignment, class, or exam to put on a schedule.")
         return ""
-
-    rendered = render_plan(plan)
-    if not release_response("\n".join(schedule), rendered):
+    if not allowed:
         return rendered
 
     print("Here is a schedule that leaves breaks and does not stack tasks on top of each other:")
