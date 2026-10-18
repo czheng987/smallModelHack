@@ -1,6 +1,8 @@
-from openai import OpenAI
+import json
+import re
+from pathlib import Path
 
-from safety_agent import review_conversation
+from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
@@ -8,56 +10,230 @@ client = OpenAI(
 )
 
 RESOURCE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+RESOURCE_FILE = Path(__file__).with_name("unc_resources.json")
+MIN_MATCHES = 2
+MAX_MATCHES = 5
 
-resources = []
-conversation = []
-to_Safety = False
+# Words that point a phrase at one section of unc_resources.json.
+CATEGORY_WORDS = {
+    "crisis": (
+        "suicide", "suicidal", "kill myself", "end my life", "self-harm",
+        "self harm", "hurt myself", "in danger", "emergency",
+    ),
+    "mental_health": (
+        "counsel", "caps", "therap", "talk", "anxi", "stress", "overwhelm",
+        "mental", "support", "lonely", "panic", "crisis", "help", "someone",
+    ),
+    "food": ("food", "hungry", "hunger", "eat", "pantry", "meal", "grocer"),
+    "housing": ("hous", "evict", "rent", "homeless", "shelter", "nowhere"),
+    "lockout_room": ("lock", "key", "dorm", "room", "shut out"),
+    "lockout_car": ("car", "vehicle", "parking"),
+}
 
-def get_resource_needs():
-    while True:
-        user_prompt = input("What resources do you need help with? (Type your request or 'exit' to quit): ")
-    
-        if user_prompt.lower() in ["exit", "quit"]:
-             print("Exiting the resource intake. Goodbye!")
-             break
-        elif user_prompt.lower() in ["continue"]: 
-            to_Safety = True
-            break
-        else:
-        
-            response = client.chat.completions.create(
-                model = RESOURCE_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a resource specialist for a college student. "
-                        "You classify risk and escalation needs. "
-                        "Diagnosis of mental illness is outside your role. "
-                        "Provide a list of resources in order for the student to try in order to help with student needs"
-                        "Reason: <one sentence, with no disorder name or treatment plan>"
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": user_prompt
-                    },
-                ],
-                max_tokens=900,
-                temperature=0.7
-            )
-            message = response.choices[0].message
-            print("Nemotron: ")
-            print("If you are done with your resource needs, type 'done' to continue.")
-            
-            conversation.append({"user": user_prompt, "assistant": message.content})  
-            # Append the user's prompt to the conversation
-        
-    def show_resources():
-        for resource in resources:
-            print("1." + resource)
-            
-        
-if to_Safety:
-    print(review_conversation(conversation))
-  
+
+def clean_phrases(resource):
+    """Accept resource[] as a list of phrases."""
+    if isinstance(resource, str):
+        resource = [resource]
+    if not isinstance(resource, list):
+        return []
+    phrases = []
+    for item in resource:
+        if not isinstance(item, str):
+            continue
+        phrase = " ".join(item.split())
+        if phrase:
+            phrases.append(phrase)
+    return phrases
+
+
+def load_catalog(path=RESOURCE_FILE):
+    with open(path) as handle:
+        data = json.load(handle)
+    records = []
+    for category in ("crisis", "mental_health", "food", "housing", "lockout_room", "lockout_car"):
+        for item in data.get(category, []):
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            records.append({
+                "category": category,
+                "name": item.get("name", ""),
+                "phone": item.get("phone", ""),
+                "link": item.get("link", ""),
+                "details": item.get("details", ""),
+            })
+    for dorm, info in data.get("service_desks", {}).items():
+        if not isinstance(info, dict):
+            continue
+        records.append({
+            "category": "service_desk",
+            "name": f"{info.get('desk', dorm)} Service Desk",
+            "phone": info.get("phone", ""),
+            "link": "",
+            "details": f"Housing desk for {dorm}. Issues temporary replacement keys.",
+            "dorm": dorm,
+        })
+    return records
+
+
+def phrase_words(phrases):
+    return set(re.findall(r"[a-z0-9']+", " ".join(phrases).lower()))
+
+
+def hint_matches(hint, words):
+    """Match a stem to a whole word. Short words such as 'car' must be exact."""
+    if hint in {"car", "rent"}:
+        return hint in words
+    return any(word.startswith(hint) for word in words)
+
+
+def score_record(record, phrases):
+    text = " ".join(phrases).lower()
+    words = phrase_words(phrases)
+    blob_words = set(re.findall(
+        r"[a-z0-9']+",
+        " ".join((
+            record.get("category", ""),
+            record.get("name", ""),
+            record.get("details", ""),
+            record.get("dorm", ""),
+        )).lower(),
+    ))
+    score = 0
+    for word in words:
+        if len(word) < 4:
+            continue
+        if word in blob_words:
+            score += 2
+    category = record.get("category")
+    if category == "service_desk":
+        dorm = record.get("dorm", "")
+        if dorm and dorm in text:
+            score += 6
+        return score
+    for hint in CATEGORY_WORDS.get(category, ()):
+        if hint_matches(hint, words):
+            score += 3
+    return score
+
+
+def search_resources(phrases, catalog):
+    """Rank JSON entries by how well they match resource[]."""
+    ranked = []
+    seen = set()
+    for record in catalog:
+        score = score_record(record, phrases)
+        if score <= 0 or record["name"] in seen:
+            continue
+        seen.add(record["name"])
+        ranked.append((score, record))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [record for _, record in ranked]
+
+
+def message_text(message):
+    content = message.content or ""
+    if isinstance(content, list):
+        content = " ".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return content
+
+
+def choose_names(phrases, candidates):
+    """Ask Nemotron to pick 2-5 names from the matched JSON entries."""
+    catalog_lines = []
+    for record in candidates[:8]:
+        catalog_lines.append(f"- {record['name']}: {record.get('details', '')}")
+    numbered = "\n".join(f"- {phrase}" for phrase in phrases)
+    response = client.chat.completions.create(
+        model=RESOURCE_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You match a student's resource[] phrases to campus resources. "
+                    "Choose 2 to 5 names from the catalog. Use the names exactly. "
+                    "Do not invent resources, phone numbers, or a diagnosis. "
+                    'Return JSON only: {"resources": ["Name"]}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"resource[]:\n{numbered}\n\nCatalog:\n" + "\n".join(catalog_lines),
+            },
+        ],
+        max_tokens=300,
+        temperature=0,
+    )
+    text = message_text(response.choices[0].message)
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return []
+    data = json.loads(text[start:end + 1])
+    names = data.get("resources", [])
+    if not isinstance(names, list):
+        return []
+    return [name.strip() for name in names if isinstance(name, str) and name.strip()]
+
+
+def select_resources(phrases, matches):
+    """Keep between 2 and 5 matched resources when the catalog has that many."""
+    if not matches:
+        return []
+    by_name = {}
+    for record in matches:
+        by_name.setdefault(record["name"], record)
+    chosen = []
+    try:
+        for name in choose_names(phrases, matches):
+            record = by_name.get(name)
+            if record and record not in chosen:
+                chosen.append(record)
+    except Exception:
+        chosen = []
+    if len(chosen) < MIN_MATCHES:
+        for record in matches:
+            if record not in chosen:
+                chosen.append(record)
+            if len(chosen) >= MIN_MATCHES:
+                break
+    return chosen[:MAX_MATCHES]
+
+
+def format_resource(index, record):
+    lines = [f"{index}. {record['name']}"]
+    if record.get("phone"):
+        lines.append(f"   Phone: {record['phone']}")
+    if record.get("link"):
+        lines.append(f"   Link: {record['link']}")
+    if record.get("details"):
+        lines.append(f"   {record['details']}")
+    return "\n".join(lines)
+
+
+def get_resource_needs(resource):
+    """Read resource[] and list 2-5 matching entries from unc_resources.json."""
+    resource = clean_phrases(resource)
+    print("Resource intake is reading resource[]:")
+    for phrase in resource:
+        print(f"- {phrase}")
+
+    if not resource:
+        print("resource[] is empty, so there is nothing to match.")
+        return []
+
+    matches = search_resources(resource, load_catalog())
+    chosen = select_resources(resource, matches)
+    if not chosen:
+        print("I could not find a matching resource in the campus list.")
+        return []
+
+    print("Here are resources that match what you asked for:")
+    rendered = []
+    for index, record in enumerate(chosen, start=1):
+        block = format_resource(index, record)
+        print(block)
+        rendered.append(record)
+    return rendered

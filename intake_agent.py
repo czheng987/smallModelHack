@@ -1,7 +1,5 @@
-import builtins
 import json
 import re
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from openai import OpenAI
@@ -18,9 +16,6 @@ client = OpenAI(
 INTAKE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
 
 handoff = "none"
-_input_lock = threading.Lock()
-_phrases_by_thread = {}
-_real_input = builtins.input
 
 
 def message_text(message):
@@ -148,23 +143,8 @@ def split_request(user_text):
     return parse_phrase_lists(message_text(response.choices[0].message))
 
 
-def _patched_input(prompt=""):
-    """Give each intake the phrases split from the original message, then read the keyboard."""
-    with _input_lock:
-        phrases = _phrases_by_thread.get(threading.get_ident())
-        if phrases:
-            phrase = phrases.pop(0)
-            print(f"{prompt}{phrase}")
-            return phrase
-        return _real_input(prompt)
-
-
 def _run_intake(intake, phrases):
-    _phrases_by_thread[threading.get_ident()] = list(phrases)
-    try:
-        intake()
-    finally:
-        _phrases_by_thread.pop(threading.get_ident(), None)
+    intake(list(phrases))
 
 
 def run_intakes(schedule, resource):
@@ -177,19 +157,15 @@ def run_intakes(schedule, resource):
     if not jobs:
         return
 
-    builtins.input = _patched_input
-    try:
-        if len(jobs) == 1:
-            _run_intake(jobs[0][0], jobs[0][1])
-            return
-        print("Starting resource intake and schedule intake at the same time.")
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(_run_intake, intake, phrases) for intake, phrases in jobs]
-            for future in futures:
-                future.result()
-    finally:
-        builtins.input = _real_input
-        _phrases_by_thread.clear()
+    if len(jobs) == 1:
+        _run_intake(jobs[0][0], jobs[0][1])
+        return
+
+    print("Starting resource intake and schedule intake at the same time.")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_run_intake, intake, phrases) for intake, phrases in jobs]
+        for future in futures:
+            future.result()
 
 
 def show_phrases(schedule, resource):
