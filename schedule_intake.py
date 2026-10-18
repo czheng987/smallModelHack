@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from datetime import datetime, timedelta
 
 from safety_agent import print_safety_result, review_conversation
 from vllm_model import VLLM_MODEL, open_client, reply_text
@@ -50,7 +51,28 @@ def tidy_activity(piece):
     return piece
 
 
-def split_listed_activities(phrases):
+def timeline_marker(text):
+    """A short timeline phrase that listed tasks should keep."""
+    patterns = (
+        r"\bnext month\b",
+        r"\bthis month\b",
+        r"\ba month\b",
+        r"\bone month\b",
+        r"\bnext week\b",
+        r"\bthis week\b",
+        r"\b(?:a|an|one|two|three|four|\d+)\s+weeks?\b",
+        r"\b\d+\s+days?\b",
+        r"\b(?:today|tomorrow|tonight)\b",
+        r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, str(text), re.IGNORECASE)
+        if match:
+            return match.group(0)
+    return weekday_of(text)
+
+
+def split_listed_activities(phrases, now=None):
     """Turn one sentence that lists several activities into one phrase each."""
     expanded = []
     for phrase in phrases:
@@ -60,9 +82,12 @@ def split_listed_activities(phrases):
         if len(pieces) < 2:
             expanded.append(phrase)
             continue
-        day = weekday_of(phrase)
-        if day:
-            pieces = [part if weekday_of(part) else f"{part} {day}" for part in pieces]
+        marker = timeline_marker(phrase)
+        if marker:
+            pieces = [
+                part if timeline_marker(part) else f"{part} {marker}"
+                for part in pieces
+            ]
         expanded.extend(pieces)
     return expanded
 
@@ -329,16 +354,17 @@ def earliest_start(day_offset, now_minutes):
     return start
 
 
-def is_today_label(label, weekday):
+def is_today_label(label, weekday, now=None):
     text = str(label).strip().lower()
-    return text in {weekday.lower(), "today", "tonight"}
+    names = {weekday.lower(), "today", "tonight", format_plan_day(now, 0).lower()}
+    return text in names
 
 
 def plan_respects_clock(plan, now=None):
     weekday, now_minutes = current_moment(now)
     earliest = earliest_start(0, now_minutes)
     for day in plan:
-        if not is_today_label(day["day"], weekday):
+        if not is_today_label(day["day"], weekday, now):
             continue
         for block in day["blocks"]:
             if earliest is None or block["start"] < earliest:
@@ -432,41 +458,28 @@ def session_count(phrase, stressed):
 
 
 def task_label(phrase):
-    text = phrase
+    text = str(phrase)
+    text = re.sub(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b", " ", text)
+    text = re.sub(
+        r"\b(?:january|february|march|april|may|june|july|august|september|"
+        r"october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+        r"\.?\s+\d{1,2}\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\b(?:a|an|one|two|three|four|\d+)\s+weeks?\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d+\s+days?\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\b(?:this|next|the|all|in|a|one)\s+(?:week|month)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
     for name in list(WEEKDAYS) + ["today", "tomorrow", "tonight", "due", "deadline"]:
         text = re.sub(rf"\b{name}\b", " ", text, flags=re.IGNORECASE)
-    text = " ".join(text.split(" "))
     text = " ".join(text.split())
     return text or phrase
-
-
-def shared_deadline(note):
-    """A note like 'Friday' or 'all of them Friday' dates every undated task."""
-    day = weekday_of(note)
-    if not day:
-        return None
-    if not significant_tokens(note):
-        return day
-    if re.search(r"\b(all|everything|every|both|them|each)\b", note, re.IGNORECASE):
-        return day
-    return None
-
-
-def phrase_day(phrase, deadline_notes):
-    own = weekday_of(phrase)
-    if own:
-        return own
-    if re.search(r"\btomorrow\b", phrase, re.IGNORECASE):
-        return "Tomorrow"
-    shared = [shared_deadline(note) for note in deadline_notes]
-    shared = [day for day in shared if day]
-    if len(set(shared)) == 1:
-        return shared[0]
-    for note in deadline_notes:
-        day = weekday_of(note)
-        if day and shares_task(phrase, note):
-            return day
-    return "Today"
 
 
 def minutes_to_hhmm(minutes):
@@ -474,37 +487,160 @@ def minutes_to_hhmm(minutes):
     return f"{hour:02d}:{minute:02d}"
 
 
-def upcoming_offset(day_name, today_name):
-    """Days from today until day_name. 0 means today."""
-    if day_name in (None, "Today", "tonight"):
+MAX_PLAN_DAYS = 31
+NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4}
+MONTH_NAMES = (
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+)
+
+
+def clock_moment(now=None):
+    """Date and time of the student's message."""
+    if now is None:
+        now = time.localtime()
+    return datetime(now.tm_year, now.tm_mon, now.tm_mday, now.tm_hour, now.tm_min)
+
+
+def format_plan_day(now, offset):
+    """Label one plan day so a later week is not the same Sunday."""
+    day = clock_moment(now) + timedelta(days=offset)
+    return f"{WEEKDAYS[day.weekday()]}, {day.strftime('%b')} {day.day}"
+
+
+def cap_span(days):
+    return max(0, min(int(days), MAX_PLAN_DAYS))
+
+
+def days_until_month_end(moment):
+    if moment.month == 12:
+        first_next = datetime(moment.year + 1, 1, 1)
+    else:
+        first_next = datetime(moment.year, moment.month + 1, 1)
+    last = first_next - timedelta(days=1)
+    return (last.date() - moment.date()).days
+
+
+def _dated_offset(year, month, day, moment, year_was_given):
+    try:
+        target = datetime(year, month, day)
+    except ValueError:
+        return None
+    if target.date() < moment.date() and not year_was_given:
+        try:
+            target = datetime(year + 1, month, day)
+        except ValueError:
+            return None
+    delta = (target.date() - moment.date()).days
+    if delta < 0:
+        return None
+    return cap_span(delta)
+
+
+def point_offset(text, now):
+    """Days until one named day. None when the text is a range or has no day."""
+    if not text:
+        return None
+    lowered = str(text).lower()
+    moment = clock_moment(now)
+    dated = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", lowered)
+    if dated:
+        year_text = dated.group(3)
+        year = int(year_text) if year_text else moment.year
+        if year < 100:
+            year += 2000
+        return _dated_offset(year, int(dated.group(1)), int(dated.group(2)), moment, bool(year_text))
+    for index, name in enumerate(MONTH_NAMES, start=1):
+        match = re.search(rf"\b(?:{name}|{name[:3]})\.?\s+(\d{{1,2}})\b", lowered)
+        if match:
+            return _dated_offset(moment.year, index, int(match.group(1)), moment, False)
+    if re.search(r"\b(today|tonight)\b", lowered):
         return 0
-    if day_name == "Tomorrow":
+    if re.search(r"\btomorrow\b", lowered):
         return 1
-    today_index = WEEKDAYS.index(today_name)
-    target_index = WEEKDAYS.index(day_name)
-    return (target_index - today_index) % 7
+    weekday = weekday_of(text)
+    if not weekday:
+        return None
+    delta = (WEEKDAYS.index(weekday) - moment.weekday()) % 7
+    if re.search(r"\bnext\b", lowered) and not re.search(r"\bthis\b", lowered):
+        delta += 7
+    return cap_span(delta)
 
 
-def day_name_from_offset(today_name, offset):
-    today_index = WEEKDAYS.index(today_name)
-    return WEEKDAYS[(today_index + offset) % 7]
+def range_offset(text, now):
+    """Days until the end of a week or month range. None when no range is named."""
+    if not text:
+        return None
+    lowered = str(text).lower()
+    moment = clock_moment(now)
+    count = re.search(r"\b(\d+)\s+days?\b", lowered)
+    if count:
+        return cap_span(int(count.group(1)))
+    weeks = re.search(r"\b(a|an|one|two|three|four|\d+)\s+weeks?\b", lowered)
+    if weeks:
+        word = weeks.group(1)
+        number = int(word) if word.isdigit() else NUMBER_WORDS[word]
+        return cap_span(number * 7)
+    if re.search(r"\b(next month|in a month|a month|one month)\b", lowered):
+        return MAX_PLAN_DAYS
+    if re.search(r"\bthis month\b", lowered):
+        return cap_span(days_until_month_end(moment))
+    if re.search(r"\bnext week\b", lowered):
+        return cap_span(((6 - moment.weekday()) % 7) + 7)
+    if re.search(r"\b(this week|the week|all week)\b", lowered):
+        return cap_span((6 - moment.weekday()) % 7)
+    return None
 
 
-def has_named_deadline(phrase, deadline_notes):
-    if weekday_of(phrase) or re.search(r"\b(today|tomorrow|tonight)\b", phrase, re.IGNORECASE):
-        return True
+def phrase_horizon(phrase, deadline_notes, now):
+    """End offset for one task, and whether that offset is one specific day."""
+    point = point_offset(phrase, now)
+    if point is not None:
+        return point, True
+    broad = range_offset(phrase, now)
+    if broad is not None:
+        return broad, False
     for note in deadline_notes:
-        if weekday_of(note) or re.search(r"\b(today|tomorrow|tonight)\b", note, re.IGNORECASE):
-            return True
-    return False
+        applies = (
+            shares_task(phrase, note)
+            or not significant_tokens(note)
+            or re.search(r"\b(all|everything|every|both|them|each|week|month)\b", note, re.IGNORECASE)
+        )
+        if not applies:
+            continue
+        point = point_offset(note, now)
+        if point is not None:
+            return point, True
+        broad = range_offset(note, now)
+        if broad is not None:
+            return broad, False
+    return 0, False
+
+
+def blocks_across(span, stressed):
+    """Short work blocks spread across the timeline, at most a few each week."""
+    if span <= 0:
+        return 1 if stressed else 2
+    weeks = max(1, (span + 6) // 7)
+    per_week = 2 if stressed else 3
+    cap = 8 if stressed else 12
+    return min(cap, weeks * per_week)
 
 
 def spread_sessions(day_offsets, count, label, minutes):
+    """Place blocks across the whole timeline, including the last day."""
     if not day_offsets:
         day_offsets = [0]
+    if count <= 1:
+        chosen = [day_offsets[0]]
+    elif count >= len(day_offsets):
+        chosen = [day_offsets[index % len(day_offsets)] for index in range(count)]
+    else:
+        last = len(day_offsets) - 1
+        chosen = [day_offsets[round(index * last / (count - 1))] for index in range(count)]
     buckets = {offset: [] for offset in day_offsets}
-    for index in range(count):
-        buckets[day_offsets[index % len(day_offsets)]].append(label)
+    for offset in chosen:
+        buckets[offset].append(label)
     sessions = []
     for offset in day_offsets:
         for task in buckets[offset]:
@@ -512,38 +648,31 @@ def spread_sessions(day_offsets, count, label, minutes):
     return sessions
 
 
-def sessions_for_phrase(phrase, stressed, deadline_notes, today_name):
-    """Turn one phrase into one sitting or several chunks on different days."""
+def sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now=None):
+    """Turn one phrase into one sitting or several chunks across the named timeline."""
+    del today_name  # dates come from the message clock, not the weekday name alone
     label = task_label(phrase)
-    named = phrase_day(phrase, deadline_notes)
-    due = upcoming_offset(named, today_name) if has_named_deadline(phrase, deadline_notes) else None
+    end, specific = phrase_horizon(phrase, deadline_notes, now)
     kind = activity_kind(phrase)
     chunk_minutes = 25 if stressed else MAX_WORK_MINUTES
     once_minutes = MAX_WORK_MINUTES if ONE_TIME_EVENT.search(phrase) else chunk_minutes
-    chunk_count = 3 if stressed else 4
+    count = blocks_across(end, stressed)
 
     if kind == "once":
-        return [{"offset": 0 if due is None else due, "task": label, "minutes": once_minutes}]
+        # A month-long note does not turn shopping into a daily chore.
+        offset = end if specific else 0
+        return [{"offset": offset, "task": label, "minutes": once_minutes}]
 
     if kind == "exam":
-        if due in (None, 0):
-            # No future day was named, so break the studying into chunks.
-            # A same-day exam is one sitting because there is no earlier day left.
-            if due == 0:
-                return [{"offset": 0, "task": label, "minutes": chunk_minutes}]
-            return spread_sessions(
-                list(range(chunk_count)), chunk_count, f"Study for {label}", chunk_minutes
-            )
-        study_days = list(range(due))
-        sessions = spread_sessions(study_days, chunk_count, f"Study for {label}", chunk_minutes)
-        sessions.append({"offset": due, "task": label, "minutes": chunk_minutes})
+        if end <= 0:
+            return [{"offset": 0, "task": label, "minutes": chunk_minutes}]
+        study_days = list(range(end)) or [0]
+        sessions = spread_sessions(study_days, count, f"Study for {label}", chunk_minutes)
+        sessions.append({"offset": end, "task": label, "minutes": chunk_minutes})
         return sessions
 
-    if due is None:
-        window = list(range(chunk_count))
-    else:
-        window = list(range(due + 1)) or [0]
-    return spread_sessions(window, chunk_count, label, chunk_minutes)
+    window = list(range(end + 1)) or [0]
+    return spread_sessions(window, count, label, chunk_minutes)
 
 
 def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None):
@@ -579,7 +708,7 @@ def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None):
     def place(offset, task, minutes, latest_offset):
         current = offset
         while current <= latest_offset:
-            label = day_name_from_offset(today_name, current)
+            label = format_plan_day(now, current)
             day = ensure(label, current)
             start = day["cursor"]
             if start is None:
@@ -613,21 +742,22 @@ def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None):
 
     for phrase in phrases:
         kind = activity_kind(phrase)
-        named_due = None
-        if has_named_deadline(phrase, deadline_notes):
-            named_due = upcoming_offset(phrase_day(phrase, deadline_notes), today_name)
-        for session in sessions_for_phrase(phrase, stressed, deadline_notes, today_name):
+        end, _specific = phrase_horizon(phrase, deadline_notes, now)
+        for session in sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now):
             if kind == "once":
-                latest = session["offset"] + 2
+                latest = min(session["offset"] + 2, MAX_PLAN_DAYS)
             elif kind == "exam" and session["task"].startswith("Study for "):
-                latest = named_due - 1 if named_due else session["offset"]
+                latest = max(session["offset"], end - 1)
             elif kind == "exam":
                 latest = session["offset"]
-            elif named_due is None:
-                latest = session["offset"] + 2
             else:
-                latest = named_due
-            place(session["offset"], session["task"], session["minutes"], max(latest, session["offset"]))
+                latest = end
+            place(
+                session["offset"],
+                session["task"],
+                session["minutes"],
+                min(MAX_PLAN_DAYS, max(latest, session["offset"])),
+            )
 
     ordered = sorted(days.items(), key=lambda item: item[1]["offset"])
     raw_days = [
@@ -641,7 +771,7 @@ def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None):
 
 DEADLINE_HINT = re.compile(
     r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-    r"today|tomorrow|tonight|due|deadline|\d{1,2}/\d{1,2})\b",
+    r"today|tomorrow|tonight|due|deadline|week|month|\d{1,2}/\d{1,2})\b",
     re.IGNORECASE,
 )
 
@@ -667,8 +797,8 @@ def collect_deadlines(schedule):
         return []
     print("I'll choose the study times from what you already said.")
     answer = input(
-        "Do any of these have a deadline? You can say something like "
-        "'chem exam Friday', or press enter to skip: "
+        "Do any of these have a deadline or a timeline? You can say "
+        "'Friday', 'this week', or 'next month', or press enter to skip: "
     ).strip()
     if not answer or answer.lower() in {"skip", "none", "no", "n/a"}:
         return []
@@ -711,6 +841,10 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                     f"- Do not schedule {weekday} before {clock}. "
                     "If that is before 9:00 AM, start at 9:00 AM. "
                     "If it is after 9:00 PM, start the next day.\n"
+                    "- Follow the timeline they named. One day stays one day, a week stays "
+                    "that week, and a month can run at most 31 days.\n"
+                    "- Spread study and large projects across that timeline. Do not bunch "
+                    "a month of work into the first afternoon.\n"
                     "- If they list several activities, schedule each one separately.\n"
                     "- Shopping, errands, conferences, appointments, homework, quizzes, and small "
                     "assignments or small projects are one block.\n"
@@ -764,14 +898,14 @@ def get_schedule_needs(schedule):
         return ""
 
     stressed = sounds_stressed(schedule)
-    schedule = split_listed_activities(schedule)
+    moment = time.localtime()
+    schedule = split_listed_activities(schedule, now=moment)
     print("Schedule intake is reading schedule[]:")
     for phrase in schedule:
         print(f"- {phrase}")
 
-    moment = time.localtime()
     weekday, now_minutes = current_moment(moment)
-    print(f"Planning from {weekday} at {minutes_to_clock(now_minutes)}.")
+    print(f"Planning from {format_plan_day(moment, 0)} at {minutes_to_clock(now_minutes)}.")
 
     deadline_notes = collect_deadlines(schedule)
 
