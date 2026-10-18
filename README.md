@@ -37,7 +37,7 @@ Use a separate terminal for each one. Leave each process running.
 **Terminal 1, the fast model server.** Intake and the schedule builder call this. It is Red Hat vLLM serving the same Nemotron weights.
 
 ```bash
-python serve_vllm.py
+python3 serve_vllm.py
 ```
 
 Wait until it is listening on `http://127.0.0.1:8001/v1`. Safety and the resource matcher keep using the Nemotron server you already started on port 8000.
@@ -45,12 +45,14 @@ Wait until it is listening on `http://127.0.0.1:8001/v1`. Safety and the resourc
 **Terminal 2, the website API.** This is the door between the page and the four agents. It runs Safety, then Intake, then Schedule, then Resources, and sends back tasks, deadlines, and campus resources.
 
 ```bash
+cd into smallModelHack directory first
 uvicorn backend:app --port 8002 --reload
 ```
 
 **Terminal 3, the website.**
 
 ```bash
+cd smallModelHack
 cd frontend
 npm run dev
 ```
