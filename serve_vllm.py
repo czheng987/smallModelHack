@@ -1,7 +1,7 @@
-"""Start vLLM for the schedule planner only.
+"""Start vLLM for intake and the schedule planner.
 
-Red Hat AI Inference Server is built on this same vLLM project. The
-schedule agent calls http://127.0.0.1:8001/v1. Intake, resource, and
+Red Hat AI Inference Server is built on this same vLLM project. Intake
+and the schedule agent call http://127.0.0.1:8001/v1. Resource and
 safety keep using the original Nemotron server on port 8000.
 
 The flags match the model's vLLM quick start:
@@ -19,7 +19,7 @@ PORT = os.environ.get("VLLM_PORT", "8001")
 
 
 def serve_args():
-    """Arguments for `vllm serve`. Port 8001 is only for the schedule planner."""
+    """Arguments for `vllm serve`. Port 8001 serves intake and the schedule planner."""
     args = [
         "vllm",
         "serve",
