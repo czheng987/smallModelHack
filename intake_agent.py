@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openai import OpenAI
 
+from phrase_check import PASS_RATE, arrange_phrases, propose_split, passes, verify_split
 from resource_intake import get_resource_needs
 from schedule_intake import get_schedule_needs
 
@@ -84,13 +85,16 @@ def assign_type(schedule, resource):
     return "none"
 
 
-def split_request(user_text):
-    """Break the student's message into schedule phrases and mental-health resource phrases."""
+def _ask_for_phrases(user_text, correction=""):
+    """Ask Nemotron for short schedule and resource phrases."""
+    correction_line = f"\n{correction}\n" if correction else ""
     messages = [
         {
             "role": "system",
             "content": (
                 "Break a UNC student's message into short phrases from their own words. "
+                "Shorten each activity so a planner can read it. Keep every activity. "
+                "Do not invent a task.\n"
                 "Return JSON only, with two arrays:\n"
                 '{"schedule": ["phrase"], "resource": ["phrase"]}\n'
                 "schedule stores phrases about a scheduling problem: classes, exams, deadlines, "
@@ -100,11 +104,12 @@ def split_request(user_text):
                 "asking for help. Do not diagnose. Do not name a disorder.\n"
                 "Put each phrase in only one array. Leave an array empty when the message has "
                 "nothing for that side.\n"
+                f"{correction_line}"
                 "Examples:\n"
                 "Student: I have three papers due Friday and I need someone to talk to\n"
-                '{"schedule": ["three papers due Friday"], "resource": ["I need someone to talk to"]}\n'
+                '{"schedule": ["three papers due Friday"], "resource": ["someone to talk to"]}\n'
                 "Student: Where can I find counseling on campus?\n"
-                '{"schedule": [], "resource": ["find counseling on campus"]}\n'
+                '{"schedule": [], "resource": ["counseling on campus"]}\n'
                 "Student: Can you help me plan study time around my labs?\n"
                 '{"schedule": ["plan study time around my labs"], "resource": []}\n'
                 "Student: thanks\n"
@@ -140,7 +145,38 @@ def split_request(user_text):
             max_tokens=800,
             temperature=0,
         )
-    return parse_phrase_lists(message_text(response.choices[0].message))
+    schedule, resource = parse_phrase_lists(message_text(response.choices[0].message))
+    return arrange_phrases(schedule, resource)
+
+
+def split_request(user_text):
+    """Break the message into phrases and return them only at the pass rate."""
+    correction = ""
+    best_reward = 0.0
+    for _attempt in range(2):
+        schedule, resource = _ask_for_phrases(user_text, correction)
+        reward = verify_split(user_text, schedule, resource)
+        best_reward = max(best_reward, reward)
+        if passes(reward):
+            print(f"Phrase check passed at {reward:.0%}.")
+            return schedule, resource
+        correction = (
+            "The last split was not accurate enough. Keep every activity, "
+            "do not invent a task, and shorten each phrase."
+        )
+
+    schedule, resource = propose_split(user_text)
+    reward = verify_split(user_text, schedule, resource)
+    if passes(reward):
+        print(f"Phrase check passed at {reward:.0%}.")
+        return schedule, resource
+
+    shown = max(best_reward, reward)
+    print(
+        f"Phrase check is {shown:.0%}, below {PASS_RATE:.0%}, "
+        "so those phrases were not used."
+    )
+    return [], []
 
 
 def _run_intake(intake, phrases):
