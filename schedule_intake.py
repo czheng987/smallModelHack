@@ -836,6 +836,12 @@ DEADLINE_HINT = re.compile(
     r"today|tomorrow|tonight|due|deadline|week|month|\d{1,2}/\d{1,2})\b",
     re.IGNORECASE,
 )
+TIMELINE_HINT = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"today|tomorrow|tonight|week|month|\d{1,2}/\d{1,2})\b"
+    r"|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
+    re.IGNORECASE,
+)
 
 
 STRESS_HINT = re.compile(
@@ -854,17 +860,19 @@ def phrases_without_deadline(schedule):
 
 
 def collect_deadlines(schedule):
-    """Ask one optional deadline question. Never ask how long a task takes."""
+    """Ask for a deadline until the student gives one. Never ask how long a task takes."""
     if not phrases_without_deadline(schedule):
         return []
     print("I'll choose the study times from what you already said.")
-    answer = input(
-        "Do any of these have a deadline or a timeline? You can say "
-        "'Friday', 'this week', or 'next month', or press enter to skip: "
-    ).strip()
-    if not answer or answer.lower() in {"skip", "none", "no", "n/a"}:
-        return []
-    return [answer]
+    prompt = (
+        "When are these due? A deadline is required. You can say "
+        "'Friday', 'this week', or 'next month': "
+    )
+    while True:
+        answer = input(prompt).strip()
+        if TIMELINE_HINT.search(answer):
+            return [answer]
+        print("I still need a deadline or a timeline. Pressing enter will not skip this.")
 
 
 def ask_for_plan(schedule, deadline_notes, stressed, now=None):
@@ -993,8 +1001,8 @@ def get_schedule_needs(schedule):
         plan = parse_plan(reply, stressed=stressed, schedule=schedule, now=moment)
     if not plan:
         plan = local_plan
-    print(f"Runtime before Red Hat vLLM: {before_seconds:.2f}s")
-    print(f"Runtime after Red Hat vLLM: {vllm_seconds:.2f}s")
+    print(f"Runtime without Red Hat vLLM: {before_seconds:.2f}s")
+    print(f"Runtime with Red Hat vLLM: {vllm_seconds:.2f}s")
     if not plan:
         print("I don't see an assignment, class, or exam to put on a schedule.")
         return ""
