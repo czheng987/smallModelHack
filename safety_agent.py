@@ -155,21 +155,32 @@ def review_conversation(conversation):
     crisis = any(n["severity"] == "crisis" for n in needs) or has_crisis_keyword(student_text)
 
     # Step 3: Attach verified resources
-    resources = []
+    resources = []  # every resource, in order (for code that just needs the list)
+    groups = []     # the same resources grouped by need, so each gets its own message
+
+    def attach(group, items):
+        already = [r["name"] for r in resources]
+        new_items = [item for item in items if item["name"] not in already]
+        add(resources, items)
+        if new_items:
+            groups.append({"group": group, "resources": new_items})
+
     if crisis:
-        add(resources, RESOURCES["crisis"])  # crisis help always comes first
+        attach("crisis", RESOURCES["crisis"])  # crisis help always comes first
 
     for need in needs:
         level = SEVERITIES.index(need["severity"])
         if need["category"] == "lockout":
             if level >= SEVERITIES.index("moderate"):
+                group = "lockout_" + need["lockout_type"]
+                items = []
                 if need["lockout_type"] == "room":
                     desk = find_service_desk(student_text)
                     if desk:
-                        add(resources, [desk])
-                add(resources, RESOURCES["lockout_" + need["lockout_type"]])
+                        items.append(desk)
+                attach(group, items + RESOURCES[group])
         elif level >= SEVERITIES.index("severe"):
-            add(resources, RESOURCES[need["category"]])
+            attach(need["category"], RESOURCES[need["category"]])
 
     # Step 4: Return a labeled "form" (dictionary) the rest of the app can read
     return {
@@ -178,7 +189,69 @@ def review_conversation(conversation):
         "allow": not crisis,  # False = stop the normal plan, show help first
         "needs": needs,
         "resources": resources,
+        "groups": groups,
     }
+
+
+# ---------------------------------------------------------------
+# PART 5b: Show the result to the student in plain, caring words.
+# review_conversation() gives the data; this function displays it.
+# ---------------------------------------------------------------
+GROUP_MESSAGES = {
+    "crisis": {
+        "intro": "Your life is valuable, and you don't have to face this alone. "
+                 "Please reach out now. Support is available 24/7:",
+        "outro": "What's happening right now does not decide your future, and life can change "
+                 "in ways you can't see yet, sometimes faster than you'd expect. You deserve to "
+                 "be heard, and there are people who want to be there for you. This may feel like "
+                 "one of the darkest times, but brighter days are ahead, and you can make it through. "
+                 "It's okay to be scared; reaching out is a brave first step.",
+    },
+    "mental_health": {
+        "intro": "It takes strength to share how you're feeling, and you don't have to carry this "
+                 "alone. These are good places to start:",
+    },
+    "food": {
+        "intro": "No one should have to go hungry, and asking for food help is completely okay. "
+                 "Here's where you can get food:",
+    },
+    "housing": {
+        "intro": "Housing problems are stressful, and you don't have to figure this out alone. "
+                 "These offices help students in exactly this situation:",
+    },
+    "lockout_room": {
+        "intro": "Getting locked out happens to everyone. Here's how to get back in:",
+    },
+    "lockout_car": {
+        "intro": "Locked out of your car? Here's who can help on campus:",
+    },
+}
+
+
+def format_resource(r):
+    line = r["name"]
+    if r.get("phone"):
+        line += ": " + r["phone"]
+    if r.get("link"):
+        line += " - " + r["link"]
+    if r.get("details"):
+        line += " (" + r["details"] + ")"
+    return "  - " + line
+
+
+def print_safety_result(result):
+    """Print the safety result as a readable message. Prints nothing if there are no needs."""
+    for group in result.get("groups", []):
+        message = GROUP_MESSAGES.get(group["group"], {})
+        print()
+        print(message.get("intro", "Here are some places that can help:"))
+        for r in group["resources"]:
+            print(format_resource(r))
+        if message.get("outro"):
+            print()
+            print(message["outro"])
+    if result.get("groups"):
+        print()
 
 
 # ---------------------------------------------------------------
@@ -198,5 +271,7 @@ if __name__ == "__main__":
     for message in test_messages:
         result = review_conversation([{"user": message, "assistant": ""}])
         print("STUDENT:", message)
-        print(json.dumps(result, indent=2))
+        print("NEEDS:", [n["category"] + ":" + n["severity"] for n in result["needs"]],
+              "| crisis:", result["crisis"])
+        print_safety_result(result)
         print("-" * 60)
