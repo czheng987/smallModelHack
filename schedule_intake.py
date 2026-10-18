@@ -4,9 +4,8 @@ import time
 from datetime import datetime, timedelta
 
 from safety_agent import print_safety_result, review_conversation
-from vllm_model import VLLM_MODEL, open_client, reply_text
+from vllm_model import VLLM_MODEL, open_client, planner_urls, reply_text, unreachable
 
-client = open_client()
 SCHEDULE_MODEL = VLLM_MODEL
 
 # A focused block stays short so one task does not take over the day.
@@ -1053,17 +1052,38 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
         "temperature": 0.2,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
     }
+    last_error = None
+    for url in planner_urls():
+        try:
+            return _complete(open_client(url), request)
+        except Exception as error:
+            if not unreachable(error):
+                raise
+            last_error = error
+    raise last_error or ConnectionError("The schedule planner could not be reached.")
+
+
+def _complete(model_client, request):
+    """One server. Drop the thinking flag if this server rejects it."""
     try:
-        response = client.chat.completions.create(**request)
+        response = model_client.chat.completions.create(**request)
     except TypeError:
-        request.pop("extra_body")
-        response = client.chat.completions.create(**request)
-    except Exception as error:
-        if getattr(error, "status_code", None) not in (400, 422):
-            raise
         request.pop("extra_body", None)
-        response = client.chat.completions.create(**request)
+        response = model_client.chat.completions.create(**request)
+    except Exception as error:
+        if not unreachable(error) and getattr(error, "status_code", None) in (400, 422):
+            request.pop("extra_body", None)
+            response = model_client.chat.completions.create(**request)
+        else:
+            raise
     return reply_text(response.choices[0].message)
+
+
+def format_runtime(seconds):
+    """Show a few milliseconds as milliseconds, so a fast plan is not 0.00s."""
+    if seconds < 0.01:
+        return f"{seconds * 1000:.1f} ms"
+    return f"{seconds:.2f}s"
 
 
 def release_response(student_text, response_text):
@@ -1100,9 +1120,11 @@ def get_schedule_needs(schedule):
 
     vllm_started = time.perf_counter()
     reply = ""
+    reached = True
     try:
         reply = ask_for_plan(schedule, deadline_notes, stressed, now=moment)
     except Exception as error:
+        reached = False
         print(f"The schedule planner could not be reached: {error}")
     vllm_seconds = time.perf_counter() - vllm_started
 
@@ -1115,8 +1137,11 @@ def get_schedule_needs(schedule):
             )
             if guided:
                 plan = guided
-    print(f"Runtime without Red Hat vLLM: {before_seconds:.2f}s")
-    print(f"Runtime with Red Hat vLLM: {vllm_seconds:.2f}s")
+    print(f"Runtime without Red Hat vLLM: {format_runtime(before_seconds)}")
+    if reached:
+        print(f"Runtime with Red Hat vLLM: {format_runtime(vllm_seconds)}")
+    else:
+        print("Runtime with Red Hat vLLM: unavailable")
     if not plan:
         print("I don't see an assignment, class, or exam to put on a schedule.")
         return ""
