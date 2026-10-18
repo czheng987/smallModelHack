@@ -38,6 +38,40 @@ def clean_phrases(schedule):
     return phrases
 
 
+LIST_INTRO = re.compile(
+    r"^(?:(?:please|can|you|i(?:'m| am)?|need|help|me|with|my|the|a|an|schedul\w+)\s+)+",
+    re.IGNORECASE,
+)
+
+
+def tidy_activity(piece):
+    """Drop list filler so 'help with scheduling shopping' becomes 'shopping'."""
+    piece = " ".join(piece.split()).strip(" .")
+    previous = None
+    while piece and piece != previous:
+        previous = piece
+        piece = LIST_INTRO.sub("", piece).strip(" .")
+    piece = re.sub(r"\bfix$", "", piece, flags=re.IGNORECASE).strip()
+    return piece
+
+
+def split_listed_activities(phrases):
+    """Turn one sentence that lists several activities into one phrase each."""
+    expanded = []
+    for phrase in phrases:
+        body = tidy_activity(phrase) or phrase
+        pieces = [tidy_activity(part) for part in re.split(r",|\band\b", body, flags=re.IGNORECASE)]
+        pieces = [part for part in pieces if significant_tokens(part)]
+        if len(pieces) < 2:
+            expanded.append(phrase)
+            continue
+        day = weekday_of(phrase)
+        if day:
+            pieces = [part if weekday_of(part) else f"{part} {day}" for part in pieces]
+        expanded.extend(pieces)
+    return expanded
+
+
 def message_text(message):
     chunks = []
     content = message.content or ""
@@ -360,6 +394,7 @@ def parse_plan(reply, stressed=False, schedule=None, now=None):
 
 ONE_TIME_EVENT = re.compile(
     r"\b(shop(?:ping)?|grocer(?:y|ies)|errands?|appointments?|haircuts?|"
+    r"conferences?|meetings?|"
     r"pick\s?up|drop\s?off|laundry|pharmacy|bank|mail|packages?)\b",
     re.IGNORECASE,
 )
@@ -538,6 +573,7 @@ def sessions_for_phrase(phrase, stressed, deadline_notes, today_name):
 def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None):
     """Build a timed plan from the student's own tasks, starting at the message time."""
     deadline_notes = [note.strip() for note in (deadline_notes or []) if note and note.strip()]
+    schedule = split_listed_activities(clean_phrases(schedule))
     phrases = list(task_phrases(schedule))
     work_note = re.compile(
         r"\b(papers?|essays?|projects?|exams?|midterms?|finals?|presentations?|"
@@ -697,7 +733,8 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                     f"- Do not schedule {weekday} before {clock}. "
                     "If that is before 9:00 AM, start at 9:00 AM. "
                     "If it is after 9:00 PM, start the next day.\n"
-                    "- Shopping, errands, appointments, homework, quizzes, and small "
+                    "- If they list several activities, schedule each one separately.\n"
+                    "- Shopping, errands, conferences, appointments, homework, quizzes, and small "
                     "assignments or small projects are one block.\n"
                     "- Studying for a midterm, exam, or final is several blocks on different days.\n"
                     "- Large projects, papers, and essays are several blocks on different days.\n"
@@ -733,19 +770,20 @@ def release_response(student_text, response_text):
 def get_schedule_needs(schedule):
     """Read schedule[] and print a plan with no overlaps and a lighter load."""
     schedule = clean_phrases(schedule)
-    print("Schedule intake is reading schedule[]:")
-    for phrase in schedule:
-        print(f"- {phrase}")
-
     if not schedule:
         print("schedule[] is empty, so there is nothing to plan.")
         return ""
+
+    stressed = sounds_stressed(schedule)
+    schedule = split_listed_activities(schedule)
+    print("Schedule intake is reading schedule[]:")
+    for phrase in schedule:
+        print(f"- {phrase}")
 
     moment = time.localtime()
     weekday, now_minutes = current_moment(moment)
     print(f"Planning from {weekday} at {minutes_to_clock(now_minutes)}.")
 
-    stressed = sounds_stressed(schedule)
     deadline_notes = collect_deadlines(schedule)
 
     try:
