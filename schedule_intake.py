@@ -664,6 +664,73 @@ def blocks_across(span, stressed):
     return min(cap, weeks * per_week)
 
 
+def pick_days(day_offsets, count):
+    """Choose that many days across the whole window, including the last day."""
+    days = list(day_offsets) or [0]
+    count = max(1, min(len(days), int(count)))
+    if count >= len(days):
+        return days
+    if count == 1:
+        return [days[0]]
+    last = len(days) - 1
+    picked = []
+    for index in range(count):
+        day = days[round(index * last / (count - 1))]
+        if not picked or picked[-1] != day:
+            picked.append(day)
+    return picked or [days[0]]
+
+
+def pace_loads(day_offsets, per_day, requested_days=None):
+    """Several sittings on each chosen day. A long deadline is not one block a day."""
+    days = list(day_offsets) or [0]
+    per_day = max(2, min(3, int(per_day or 2)))
+    if len(days) <= 7:
+        chosen = days
+    else:
+        weeks = max(1, (len(days) + 6) // 7)
+        default = min(len(days), weeks * 3)
+        low = min(len(days), max(2, weeks * 2))
+        high = min(len(days), weeks * 4)
+        if requested_days is None:
+            count = default
+        else:
+            try:
+                count = int(requested_days)
+            except (TypeError, ValueError):
+                count = default
+            count = max(low, min(high, count))
+        chosen = pick_days(days, count)
+    return [(day, per_day) for day in chosen]
+
+
+def sessions_from_loads(loads, label, minutes):
+    sessions = []
+    for offset, count in loads:
+        for _ in range(count):
+            sessions.append({"offset": offset, "task": label, "minutes": minutes})
+    return sessions
+
+
+def sessions_per_day_from(guidance):
+    """Study sits more than once a day. Three sittings is the full realistic day."""
+    if not guidance:
+        return 2
+    try:
+        number = int(guidance.get("sessions_per_day"))
+    except (TypeError, ValueError):
+        return 2
+    return max(2, min(3, number))
+
+
+def flag_is_true(value, default=True):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "no", "0"}
+    return bool(value)
+
+
 def spread_sessions(day_offsets, count, label, minutes):
     """Place blocks across the whole timeline, including the last day."""
     if not day_offsets:
@@ -694,7 +761,7 @@ def with_clock(session, text):
     return session
 
 
-def sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now=None):
+def sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now=None, guidance=None):
     """Turn one phrase into one sitting or several chunks across the named timeline."""
     del today_name  # dates come from the message clock, not the weekday name alone
     label = task_label(phrase)
@@ -702,8 +769,9 @@ def sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now=None):
     kind = activity_kind(phrase)
     chunk_minutes = 25 if stressed else MAX_WORK_MINUTES
     once_minutes = MAX_WORK_MINUTES if ONE_TIME_EVENT.search(phrase) else chunk_minutes
-    count = blocks_across(end, stressed)
     studying = bool(STUDY_WORD.search(phrase) and EXAM_WORD.search(phrase))
+    per_day = sessions_per_day_from(guidance)
+    requested_days = None if not guidance else guidance.get("days")
 
     if kind == "once":
         # A month-long note does not turn shopping into a daily chore.
@@ -713,17 +781,49 @@ def sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now=None):
     if kind == "exam" or studying:
         event = re.sub(r"^study for\s+", "", label, flags=re.IGNORECASE)
         if end <= 0:
-            return [with_clock({"offset": 0, "task": event, "minutes": chunk_minutes}, source)]
+            count = per_day if studying else 1
+            task = f"Study for {event}" if studying else event
+            sessions = sessions_from_loads([(0, count)], task, chunk_minutes)
+            if sessions:
+                sessions[0] = with_clock(sessions[0], source)
+                _, end_by = clock_limit(source)
+                if end_by is not None:
+                    for session in sessions[1:]:
+                        session["by"] = end_by
+            return sessions
         study_days = list(range(end)) or [0]
-        sessions = spread_sessions(study_days, min(count, len(study_days)), f"Study for {event}", chunk_minutes)
+        loads = pace_loads(study_days, per_day, requested_days)
+        sessions = sessions_from_loads(loads, f"Study for {event}", chunk_minutes)
         sessions.append(with_clock({"offset": end, "task": event, "minutes": chunk_minutes}, source))
         return sessions
 
     window = list(range(end + 1)) or [0]
-    return spread_sessions(window, count, label, chunk_minutes)
+    # vLLM can call a project one sitting. Study still repeats when the deadline has room.
+    if not flag_is_true(None if not guidance else guidance.get("split"), default=True):
+        offset = end if specific else 0
+        return [with_clock({"offset": offset, "task": label, "minutes": chunk_minutes}, source)]
+    repeat = flag_is_true(None if not guidance else guidance.get("repeat"), default=len(window) > 1)
+    if not repeat:
+        loads = [(window[0], per_day)]
+    else:
+        loads = pace_loads(window, per_day, requested_days)
+    return sessions_from_loads(loads, label, chunk_minutes)
 
 
-def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None):
+def guidance_for(phrase, guidance):
+    """The vLLM decision for this task, matched by the student's own words."""
+    if not guidance:
+        return None
+    for item in guidance:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("task") or item.get("name") or ""
+        if shares_task(name, phrase):
+            return item
+    return None
+
+
+def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None, guidance=None):
     """Build a timed plan from the student's own tasks, starting at the message time."""
     deadline_notes = [note.strip() for note in (deadline_notes or []) if note and note.strip()]
     schedule = split_listed_activities(clean_phrases(schedule))
@@ -801,7 +901,9 @@ def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None):
     for phrase in phrases:
         kind = activity_kind(phrase)
         end, _specific, _source = phrase_horizon(phrase, deadline_notes, now)
-        for session in sessions_for_phrase(phrase, stressed, deadline_notes, today_name, now):
+        for session in sessions_for_phrase(
+            phrase, stressed, deadline_notes, today_name, now, guidance=guidance_for(phrase, guidance)
+        ):
             at_time = session.get("at")
             by_time = session.get("by")
             if at_time is not None or by_time is not None:
@@ -875,71 +977,79 @@ def collect_deadlines(schedule):
         print("I still need a deadline or a timeline. Pressing enter will not skip this.")
 
 
+def parse_task_analysis(reply, schedule):
+    """Read the short vLLM decision. Ignore a reply that does not name the student's tasks."""
+    phrases = task_phrases(clean_phrases(schedule))
+    if not phrases:
+        return []
+    for data in load_json_values(reply or ""):
+        tasks = []
+        if isinstance(data, dict):
+            raw = data.get("tasks") or data.get("analysis")
+            if isinstance(raw, list):
+                tasks = raw
+        elif isinstance(data, list):
+            tasks = data
+        matched = []
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("task") or item.get("name") or ""
+            if any(shares_task(name, phrase) for phrase in phrases):
+                matched.append(item)
+        if matched:
+            return matched
+    return []
+
+
 def ask_for_plan(schedule, deadline_notes, stressed, now=None):
     numbered = "\n".join(f"- {phrase}" for phrase in schedule)
     deadlines = "\n".join(f"- {note}" for note in deadline_notes) or "- No extra deadlines were given."
     weekday, now_minutes = current_moment(now)
     clock = minutes_to_clock(now_minutes)
     load = (
-        "The student sounds stressed. Use 25 minute work blocks, extra breaks, "
-        "and about 2 hours of work in a day."
+        "The student sounds stressed. Keep each sitting to 25 minutes and about 2 hours in a day."
         if stressed
-        else "The student does not sound especially stressed. Use up to 45 minute blocks "
-        "and at most 4 hours of work in a day."
+        else "Use 45 minute sittings and at most 4 hours of work in a day."
     )
-    # Thinking stays on for this call. Building a plan takes several steps.
+    # A short decision is enough. The local planner places the clock times, so this
+    # call does not spend tokens writing every block.
     request = {
         "model": SCHEDULE_MODEL,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "You plan a realistic schedule for one UNC student. "
-                    "You choose every start and end time. "
-                    "The student does not tell you how long each assignment takes. "
-                    "Do not ask them for a duration or a start time. "
-                    "Think through the clock, the deadlines, and which tasks are one sitting "
-                    "before you answer. Estimate a realistic duration from the task itself.\n"
+                    "You decide how a UNC student's tasks should be split. "
+                    "You do not write clock times. Keep the reasoning to a few sentences.\n"
                     f"The student is messaging you on {weekday} at {clock}.\n"
                     f"{load}\n"
-                    "Rules:\n"
-                    "- Use only the tasks they named. Do not invent extra exams or jobs.\n"
-                    "- Do not diagnose a mental illness.\n"
-                    "- Put a 10 minute break between work blocks.\n"
-                    "- Do not overlap any blocks.\n"
-                    "- Stay between 9:00 AM and 9:00 PM.\n"
-                    f"- Do not schedule {weekday} before {clock}. "
-                    "If that is before 9:00 AM, start at 9:00 AM. "
-                    "If it is after 9:00 PM, start the next day.\n"
-                    "- Follow the timeline they named. One day stays one day, a week stays "
-                    "that week, and a month can run at most 31 days.\n"
-                    "- Match each deadline to the task it names. Do not put every task on the "
-                    "first day in the answer.\n"
-                    "- 'at 9am' is when that task starts. 'by 5pm' means that task ends by then.\n"
-                    "- 'next Saturday' is the coming Saturday. Add a week only when that weekday is today.\n"
-                    "- Study for an exam on the days before it, and put the exam at the clock time they named.\n"
-                    "- Spread study and large projects across that timeline. Do not bunch "
-                    "a month of work into the first afternoon.\n"
-                    "- If they list several activities, schedule each one separately.\n"
-                    "- Shopping, errands, conferences, appointments, homework, quizzes, and small "
-                    "assignments or small projects are one block.\n"
-                    "- Studying for a midterm, exam, or final is several blocks on different days.\n"
-                    "- Large projects, papers, and essays are several blocks on different days.\n"
-                    "- Copy each task from the student's own words. Do not invent a task.\n"
-                    "Return JSON only, with 24-hour times and no sample task:\n"
-                    '{"days":[{"day":"Monday","blocks":[{"start":"HH:MM","end":"HH:MM","task":"<one student task>"}]}]}'
+                    f"There are {len(schedule)} tasks. Look at each task and its deadline.\n"
+                    "For each task decide:\n"
+                    "- repeat: false for one sitting, such as shopping, an appointment, or a small assignment. "
+                    "true when the work continues on later days.\n"
+                    "- split: true when one day should hold more than one sitting.\n"
+                    "- sessions_per_day: 2 or 3. Study should happen more than once a day, "
+                    "with a break between sittings. Do not leave study as one 45 minute block.\n"
+                    "- days: how many different days to use. Use more than one day when the deadline allows it. "
+                    "Do not squeeze a multi-day deadline into one day, and do not spread study so thin "
+                    "that a day has only one short block.\n"
+                    "Use only the tasks they named. Do not diagnose a mental illness.\n"
+                    "Return JSON only:\n"
+                    '{"tasks":[{"task":"<student task>","repeat":true,"split":true,"sessions_per_day":2,"days":3}]}'
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"Right now it is {weekday} {clock}.\n\n"
-                    f"Student's words:\n{numbered}\n\n"
+                    f"Right now it is {weekday} {clock}.\n"
+                    f"Task count: {len(schedule)}\n\n"
+                    f"Tasks:\n{numbered}\n\n"
                     f"Deadlines:\n{deadlines}"
                 ),
             },
         ],
-        "max_tokens": 4000,
+        "max_tokens": 800,
         "temperature": 0.2,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
     }
@@ -996,11 +1106,15 @@ def get_schedule_needs(schedule):
         print(f"The schedule planner could not be reached: {error}")
     vllm_seconds = time.perf_counter() - vllm_started
 
-    plan = []
+    plan = local_plan
     if reply:
-        plan = parse_plan(reply, stressed=stressed, schedule=schedule, now=moment)
-    if not plan:
-        plan = local_plan
+        guidance = parse_task_analysis(reply, schedule)
+        if guidance:
+            guided = plan_from_phrases(
+                schedule, stressed, deadline_notes, now=moment, guidance=guidance
+            )
+            if guided:
+                plan = guided
     print(f"Runtime without Red Hat vLLM: {before_seconds:.2f}s")
     print(f"Runtime with Red Hat vLLM: {vllm_seconds:.2f}s")
     if not plan:
