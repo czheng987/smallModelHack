@@ -1,7 +1,8 @@
-"""Start vLLM's OpenAI-compatible server for the shared Nemotron model.
+"""Start vLLM for the schedule planner only.
 
-Red Hat AI Inference Server is built on this same vLLM project. The agents
-call http://127.0.0.1:8000/v1 and do not load the model themselves.
+Red Hat AI Inference Server is built on this same vLLM project. The
+schedule agent calls http://127.0.0.1:8001/v1. Intake, resource, and
+safety keep using the original Nemotron server on port 8000.
 
 The flags match the model's vLLM quick start:
 https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
@@ -14,11 +15,11 @@ import sys
 from vllm_model import VLLM_MODEL
 
 HOST = os.environ.get("VLLM_HOST", "127.0.0.1")
-PORT = os.environ.get("VLLM_PORT", "8000")
+PORT = os.environ.get("VLLM_PORT", "8001")
 
 
 def serve_args():
-    """Arguments for `vllm serve`. Host and port match the agents' client."""
+    """Arguments for `vllm serve`. Port 8001 is only for the schedule planner."""
     args = [
         "vllm",
         "serve",
@@ -49,7 +50,7 @@ def main():
     if shutil.which("vllm") is None:
         sys.exit(
             "vLLM is not installed. On the GPU machine run: pip install vllm\n"
-            "Then start this server before intake_agent.py."
+            "Then start this server before asking the schedule planner to build a plan."
         )
     os.execvp("vllm", serve_args())
 

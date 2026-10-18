@@ -687,9 +687,10 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
         else "The student does not sound especially stressed. Use up to 45 minute blocks "
         "and at most 4 hours of work in a day."
     )
-    response = client.chat.completions.create(
-        model=SCHEDULE_MODEL,
-        messages=[
+    # Thinking stays on for this call. Building a plan takes several steps.
+    request = {
+        "model": SCHEDULE_MODEL,
+        "messages": [
             {
                 "role": "system",
                 "content": (
@@ -697,7 +698,8 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                     "You choose every start and end time. "
                     "The student does not tell you how long each assignment takes. "
                     "Do not ask them for a duration or a start time. "
-                    "Estimate a realistic duration from the task itself.\n"
+                    "Think through the clock, the deadlines, and which tasks are one sitting "
+                    "before you answer. Estimate a realistic duration from the task itself.\n"
                     f"The student is messaging you on {weekday} at {clock}.\n"
                     f"{load}\n"
                     "Rules:\n"
@@ -728,9 +730,20 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                 ),
             },
         ],
-        max_tokens=1200,
-        temperature=0.2,
-    )
+        "max_tokens": 4000,
+        "temperature": 0.2,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+    }
+    try:
+        response = client.chat.completions.create(**request)
+    except TypeError:
+        request.pop("extra_body")
+        response = client.chat.completions.create(**request)
+    except Exception as error:
+        if getattr(error, "status_code", None) not in (400, 422):
+            raise
+        request.pop("extra_body", None)
+        response = client.chat.completions.create(**request)
     return reply_text(response.choices[0].message)
 
 

@@ -2,11 +2,16 @@ import json
 import re
 from pathlib import Path
 
-from safety_agent import print_safety_result, review_conversation
-from vllm_model import VLLM_MODEL, open_client, reply_text
+from openai import OpenAI
 
-client = open_client()
-RESOURCE_MODEL = VLLM_MODEL
+from safety_agent import print_safety_result, review_conversation
+
+client = OpenAI(
+    base_url="http://127.0.0.1:8000/v1",
+    api_key="not-needed",
+)
+
+RESOURCE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
 RESOURCE_FILE = Path(__file__).with_name("unc_resources.json")
 MIN_MATCHES = 2
 MAX_MATCHES = 5
@@ -128,6 +133,16 @@ def search_resources(phrases, catalog):
     return [record for _, record in ranked]
 
 
+def message_text(message):
+    content = message.content or ""
+    if isinstance(content, list):
+        content = " ".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return content
+
+
 def choose_names(phrases, candidates):
     """Ask Nemotron to pick 2-5 names from the matched JSON entries."""
     catalog_lines = []
@@ -154,7 +169,7 @@ def choose_names(phrases, candidates):
         max_tokens=300,
         temperature=0,
     )
-    text = reply_text(response.choices[0].message)
+    text = message_text(response.choices[0].message)
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         return []

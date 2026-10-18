@@ -1,16 +1,16 @@
-"""Client for the vLLM server that runs Nemotron.
+"""Client for the vLLM server used only by the schedule planner.
 
-vLLM is the open inference server described by Red Hat: it keeps the
-model on the GPU and serves many requests through PagedAttention and
-continuous batching. Intake, schedule, and resource all share this client.
-The server itself is started with serve_vllm.py.
+Scheduling takes several steps: clock, deadlines, one-time events, and
+work that has to be split. vLLM is the open inference server Red Hat AI
+is built on. It keeps Nemotron on the GPU and lets that one hard call
+think. Intake, resource, and safety stay on the original server.
 """
 
 import os
 
 from openai import OpenAI
 
-VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1")
+VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8001/v1")
 VLLM_API_KEY = os.environ.get("VLLM_API_KEY", "not-needed")
 VLLM_MODEL = os.environ.get(
     "VLLM_MODEL",
