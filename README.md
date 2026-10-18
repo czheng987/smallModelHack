@@ -1,6 +1,6 @@
 # smallModelHack
 
-A UNC Chapel Hill student support tracker. The student describes what they need in the React site. Safety, intake, the schedule builder, and the resource matcher run on a local Nemotron model and return a plan the site can show as Today, Week, and Month.
+A UNC Chapel Hill student support tracker. The student describes what they need in the React web development site. Safety, intake, the schedule builder, and the resource matcher run on a local Nemotron model and return a plan the site can show as Today, Week, and Month.
 
 ## Quick start
 
