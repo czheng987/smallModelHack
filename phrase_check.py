@@ -1,16 +1,18 @@
-"""Score intake phrases with the NeMo Gym reward and pass-rate pattern.
+"""Score intake phrases by agreement across many servers.
 
-Each student message is one task. verify_split returns a reward from 0 to 1:
-every activity is still there, nothing was invented, and each phrase is short
-enough for the planner. A split is returned only when the reward reaches the
-pass rate (90%, or 95% when PHRASE_PASS_RATE=0.95).
+Each server phrases the same student message. The phrases are good when at
+least 90% of the servers return the same split, or a very similar one. Set
+PHRASE_PASS_RATE=0.95 to require 95%, and PHRASE_SERVERS to change how many
+servers vote. The default is 100.
 """
 
 import os
 import re
 
-# A live message is one task. 90% is the bar; set PHRASE_PASS_RATE=0.95 to require 95%.
+# 90% of the servers must agree. Set PHRASE_PASS_RATE=0.95 to require 95%.
 PASS_RATE = float(os.environ.get("PHRASE_PASS_RATE", "0.90"))
+# How many servers phrase the message together.
+SERVER_COUNT = max(1, int(os.environ.get("PHRASE_SERVERS", "100")))
 
 GLUE_WORDS = {
     "a", "an", "the", "to", "for", "of", "on", "in", "at", "and", "or", "my",
@@ -143,12 +145,54 @@ def passes(reward, minimum=None):
     return reward >= bar
 
 
-def pass_rate(messages):
-    """pass@1 for the rule splitter across these student messages."""
-    if not messages:
-        return 0.0
-    rewards = [
-        verify_split(message, *propose_split(message))
-        for message in messages
-    ]
-    return sum(rewards) / len(rewards)
+def split_keys(schedule, resource):
+    """Activity keys, so small wording differences still count as the same phrase."""
+    keys = set()
+    for label, phrases in (("s", schedule or []), ("r", resource or [])):
+        for phrase in phrases:
+            key = " ".join(tokens(phrase))
+            if key:
+                keys.add(f"{label}:{key}")
+    return keys
+
+
+def splits_similar(left, right):
+    """True when two servers returned the same activities, or at least 90% of them."""
+    left_keys = split_keys(*left)
+    right_keys = split_keys(*right)
+    if not left_keys and not right_keys:
+        return True
+    if not left_keys or not right_keys:
+        return False
+    overlap = len(left_keys & right_keys) / len(left_keys | right_keys)
+    return overlap >= PASS_RATE
+
+
+def consensus(results):
+    """Majority split, and the share of servers that match it.
+
+    A missing vote (None) does not match. The share uses every server that was
+    asked, so a server that never answered pulls the agreement down.
+    """
+    asked = len(results)
+    votes = [item for item in results if item is not None]
+    if asked == 0 or not votes:
+        return [], [], 0.0
+    best = votes[0]
+    best_hits = -1
+    for candidate in votes:
+        hits = sum(1 for other in votes if splits_similar(candidate, other))
+        if hits > best_hits:
+            best = candidate
+            best_hits = hits
+    return list(best[0]), list(best[1]), best_hits / asked
+
+
+def accepted_split(message, results):
+    """Keep the majority only when the servers agree and the phrases are accurate."""
+    schedule, resource, rate = consensus(results)
+    if not passes(rate):
+        return False, schedule, resource, rate
+    if not passes(verify_split(message, schedule, resource)):
+        return False, schedule, resource, rate
+    return True, schedule, resource, rate

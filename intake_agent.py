@@ -1,19 +1,18 @@
 import json
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-from openai import OpenAI
-
-from phrase_check import PASS_RATE, arrange_phrases, propose_split, passes, verify_split
+from phrase_check import PASS_RATE, SERVER_COUNT, accepted_split, arrange_phrases
 from resource_intake import get_resource_needs
 from schedule_intake import get_schedule_needs
+from vllm_model import NEMOTRON_BASE_URL, open_client
 
 
-# Connect to Nemotron running on the Brev server
-client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
-    api_key="not-needed"
-)
+# Connect to Nemotron running on the Brev server. A closed port is not retried.
+client = open_client(NEMOTRON_BASE_URL)
+# A little variation so the servers can disagree when the phrasing is unstable.
+PHRASE_TEMPERATURE = float(os.environ.get("PHRASE_TEMPERATURE", "0.2"))
 INTAKE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
 
 handoff = "none"
@@ -85,9 +84,8 @@ def assign_type(schedule, resource):
     return "none"
 
 
-def _ask_for_phrases(user_text, correction=""):
-    """Ask Nemotron for short schedule and resource phrases."""
-    correction_line = f"\n{correction}\n" if correction else ""
+def _ask_for_phrases(user_text):
+    """Ask one server for short schedule and resource phrases."""
     messages = [
         {
             "role": "system",
@@ -104,7 +102,6 @@ def _ask_for_phrases(user_text, correction=""):
                 "asking for help. Do not diagnose. Do not name a disorder.\n"
                 "Put each phrase in only one array. Leave an array empty when the message has "
                 "nothing for that side.\n"
-                f"{correction_line}"
                 "Examples:\n"
                 "Student: I have three papers due Friday and I need someone to talk to\n"
                 '{"schedule": ["three papers due Friday"], "resource": ["someone to talk to"]}\n'
@@ -126,7 +123,7 @@ def _ask_for_phrases(user_text, correction=""):
             model=INTAKE_MODEL,
             messages=messages,
             max_tokens=400,
-            temperature=0,
+            temperature=PHRASE_TEMPERATURE,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
     except TypeError:
@@ -134,7 +131,7 @@ def _ask_for_phrases(user_text, correction=""):
             model=INTAKE_MODEL,
             messages=messages,
             max_tokens=800,
-            temperature=0,
+            temperature=PHRASE_TEMPERATURE,
         )
     except Exception as error:
         if getattr(error, "status_code", None) not in (400, 422):
@@ -143,38 +140,41 @@ def _ask_for_phrases(user_text, correction=""):
             model=INTAKE_MODEL,
             messages=messages,
             max_tokens=800,
-            temperature=0,
+            temperature=PHRASE_TEMPERATURE,
         )
     schedule, resource = parse_phrase_lists(message_text(response.choices[0].message))
     return arrange_phrases(schedule, resource)
 
 
+def _server_vote(user_text):
+    """One server's phrases. A server that does not answer casts no vote."""
+    try:
+        return _ask_for_phrases(user_text)
+    except Exception:
+        return None
+
+
 def split_request(user_text):
-    """Break the message into phrases and return them only at the pass rate."""
-    correction = ""
-    best_reward = 0.0
-    for _attempt in range(2):
-        schedule, resource = _ask_for_phrases(user_text, correction)
-        reward = verify_split(user_text, schedule, resource)
-        best_reward = max(best_reward, reward)
-        if passes(reward):
-            print(f"Phrase check passed at {reward:.0%}.")
-            return schedule, resource
-        correction = (
-            "The last split was not accurate enough. Keep every activity, "
-            "do not invent a task, and shorten each phrase."
+    """Phrase the message on many servers and keep it only when they agree."""
+    print(f"Checking this phrasing across {SERVER_COUNT} servers.")
+    with ThreadPoolExecutor(max_workers=SERVER_COUNT) as pool:
+        votes = list(pool.map(_server_vote, [user_text] * SERVER_COUNT))
+    ok, schedule, resource, rate = accepted_split(user_text, votes)
+    if ok:
+        print(
+            f"Phrase check passed at {rate:.0%} agreement "
+            f"across {SERVER_COUNT} servers."
         )
-
-    schedule, resource = propose_split(user_text)
-    reward = verify_split(user_text, schedule, resource)
-    if passes(reward):
-        print(f"Phrase check passed at {reward:.0%}.")
         return schedule, resource
-
-    shown = max(best_reward, reward)
+    if rate >= PASS_RATE:
+        print(
+            f"Phrase check is {rate:.0%} agreement across {SERVER_COUNT} servers, "
+            "but the phrases were not accurate enough, so they were not used."
+        )
+        return [], []
     print(
-        f"Phrase check is {shown:.0%}, below {PASS_RATE:.0%}, "
-        "so those phrases were not used."
+        f"Phrase check is {rate:.0%} agreement across {SERVER_COUNT} servers, "
+        f"below {PASS_RATE:.0%}, so those phrases were not used."
     )
     return [], []
 
