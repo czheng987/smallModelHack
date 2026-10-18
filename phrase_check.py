@@ -27,9 +27,50 @@ INTRO = re.compile(
     r"have|has|got|get)\s+)+",
     re.IGNORECASE,
 )
+# A resource need names the help itself: counseling, food, a place to stay, a lockout.
+# "sign housings" does not match. That is a calendar task and stays in schedule[].
 RESOURCE_WORD = re.compile(
-    r"\b(counsel(?:ing|or)?|therap(?:y|ist)|caps|mental|anxiou\w*|overwhelm\w*|"
-    r"stress(?:ed)?|depress\w*|lonely)\b|\btalk to\b|\bsomeone to talk\b",
+    r"\b("
+    r"counsel(?:ing|or|ors)?|therap(?:y|ist|ists)|caps|mental|"
+    r"anxiou\w*|overwhelm\w*|stress(?:ed|ful)?|depress\w*|"
+    r"lonely|loneliness|panic(?:king)?|panicked|support|"
+    r"crisis|suicidal|suicide|"
+    r"hungry|hunger|homeless|evict\w*|shelter|lockout|pantry|"
+    r"grocer(?:y|ies)?"
+    r")\b|"
+    r"\b(?:talk|speak|chat)\s+(?:to|with)\b|"
+    r"\bsomeone to (?:talk|speak|listen)\b|"
+    r"\blocked out\b|\bshut out\b|\blost (?:my )?keys?\b|"
+    r"\bnowhere to (?:stay|live|sleep)\b|\bplace to stay\b|"
+    r"\bhousing (?:resource|resources|help|support|insecurity)\b|"
+    r"\b(?:need|find) (?:food|housing|a place to stay)\b|"
+    r"\bcan(?:not|'t) afford (?:food|rent)\b",
+    re.IGNORECASE,
+)
+# Calendar verbs. "sign housings" and "study for midterm" stay on the schedule side.
+_SCHEDULE_ACTION = re.compile(
+    r"\b(?:sign|signing|schedule|scheduling|study|studying|submit|submitting|"
+    r"complete|completing|finish|finishing|review|reviewing|plan|planning|"
+    r"work|working|read|reading|write|writing|attend|attending)\b",
+    re.IGNORECASE,
+)
+_FOOD_WORD = re.compile(r"\bfood\b", re.IGNORECASE)
+_HOUSING_WORD = re.compile(r"\bhous(?:e|ing|ings)?\b", re.IGNORECASE)
+_RENT_WORD = re.compile(r"\brent\b", re.IGNORECASE)
+_ACADEMIC = re.compile(
+    r"\b(?:science|class|classes|exam|exams|midterm|final|finals|homework|"
+    r"lab|labs|paper|papers|course|lecture|quiz|assignment)\b",
+    re.IGNORECASE,
+)
+_LOCKOUT = re.compile(
+    r"\blocked out\b|\blockout\b|\bshut out\b|\blost (?:my )?keys?\b|"
+    r"\blocked\b.{0,30}\b(?:dorm|room|car|vehicle)\b|"
+    r"\b(?:dorm|room|car|vehicle)\b.{0,30}\blocked\b",
+    re.IGNORECASE,
+)
+_SOMEONE_NEED = re.compile(
+    r"\bsomeone\b.+\b(?:talk|listen|speak|support|counsel)\b|"
+    r"\b(?:talk|listen|speak|support|counsel)\b.+\bsomeone\b",
     re.IGNORECASE,
 )
 # Verbs alone are not a schedule item. "Study on" has no noun; "study for midterm" does.
@@ -123,14 +164,34 @@ def drop_bare_phrases(schedule, resource):
     return schedule_out, resource_out
 
 
+def is_resource_phrase(phrase):
+    """True when the phrase names a campus resource need and belongs in resource[]."""
+    if not resource_has_need(phrase):
+        return False
+    if RESOURCE_WORD.search(phrase) or _LOCKOUT.search(phrase) or _SOMEONE_NEED.search(phrase):
+        return True
+    # "sign housings" and "study for food science" name a calendar task.
+    if _SCHEDULE_ACTION.search(phrase) or _ACADEMIC.search(phrase):
+        return False
+    return bool(_FOOD_WORD.search(phrase) or _HOUSING_WORD.search(phrase) or _RENT_WORD.search(phrase))
+
+
+def arrays_are_correct(schedule, resource):
+    """Resource needs belong in resource[]. Schedule tasks stay in schedule[]."""
+    if any(is_resource_phrase(phrase) for phrase in (schedule or [])):
+        return False
+    if any(not is_resource_phrase(phrase) for phrase in (resource or [])):
+        return False
+    return True
+
+
 def arrange_phrases(schedule, resource):
-    """Shorten model phrases and put each one on the schedule or resource side."""
+    """Shorten model phrases and put each one in schedule[] or resource[]."""
     schedule_out = []
     resource_out = []
     for phrase in prepare_phrases(list(schedule or []) + list(resource or [])):
-        if RESOURCE_WORD.search(phrase):
-            if resource_has_need(phrase):
-                resource_out.append(phrase)
+        if is_resource_phrase(phrase):
+            resource_out.append(phrase)
         elif schedule_has_noun(phrase):
             schedule_out.append(phrase)
     return schedule_out, resource_out
@@ -167,10 +228,12 @@ def _short(phrase, message):
 
 
 def verify_split(message, schedule, resource):
-    """Reward in [0, 1]. NeMo Gym would return this from verify()."""
+    """Reward in [0, 1]. NeMo Gym returns this from verify() after array assignment."""
     if any(not schedule_has_noun(phrase) for phrase in (schedule or [])):
         return 0.5
     if any(not resource_has_need(phrase) for phrase in (resource or [])):
+        return 0.5
+    if not arrays_are_correct(schedule, resource):
         return 0.5
     phrases = prepare_phrases(list(schedule or []) + list(resource or []))
     expected = task_chunks(message)
@@ -243,7 +306,13 @@ def consensus(results):
 
 def accepted_split(message, results):
     """Keep the majority only when the servers agree and the phrases are accurate."""
-    schedule, resource, rate = consensus(results)
+    arranged = []
+    for item in results:
+        if item is None:
+            arranged.append(None)
+        else:
+            arranged.append(arrange_phrases(*item))
+    schedule, resource, rate = consensus(arranged)
     if not passes(rate):
         return False, schedule, resource, rate
     if not passes(verify_split(message, schedule, resource)):

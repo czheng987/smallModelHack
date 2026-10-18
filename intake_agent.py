@@ -82,15 +82,16 @@ def _phrase_messages(user_text):
                 "Do not invent a task.\n"
                 "Each schedule phrase must include the noun for what is being scheduled. "
                 "Do not return a bare verb such as \"study on\".\n"
-                "Each resource phrase must name what the student needs, such as counseling "
-                "or someone to talk to. Do not return only \"help\" or \"talk\".\n"
+                "Each resource phrase must name what the student needs, such as counseling, "
+                "someone to talk to, the food pantry, housing help, or a lockout. "
+                "Do not return only \"help\" or \"talk\".\n"
                 "Return JSON only, with two arrays:\n"
                 '{"schedule": ["phrase"], "resource": ["phrase"]}\n'
                 "schedule stores phrases about a scheduling problem: classes, exams, deadlines, "
-                "study time, workload, or planning the week.\n"
-                "resource stores phrases about needing mental health support: wanting someone to "
-                "talk to, counseling, campus mental health resources, or feeling overwhelmed and "
-                "asking for help. Do not diagnose. Do not name a disorder.\n"
+                "study time, workload, or planning the week. \"sign housings\" is a schedule phrase.\n"
+                "resource stores a request for campus help: someone to talk to, counseling, "
+                "support, food, a place to stay, or being locked out. Do not diagnose. "
+                "Do not name a disorder.\n"
                 "Put each phrase in only one array. Leave an array empty when the message has "
                 "nothing for that side.\n"
                 "Examples:\n"
@@ -100,6 +101,8 @@ def _phrase_messages(user_text):
                 '{"schedule": [], "resource": ["counseling on campus"]}\n'
                 "Student: Can you help me plan study time around my labs?\n"
                 '{"schedule": ["plan study time around my labs"], "resource": []}\n'
+                "Student: I am locked out of my dorm and I need to study for midterm\n"
+                '{"schedule": ["study for midterm"], "resource": ["locked out of my dorm"]}\n'
                 "Student: thanks\n"
                 '{"schedule": [], "resource": []}'
             ),
