@@ -1,13 +1,11 @@
-"""Offline agreement gate for intake phrasing.
+"""Ask the NeMo Gym intake_phrases server to score sample messages.
 
-One hundred servers phrase each student message. The split is good when at
-least 90% of them return the same activities, or activities that overlap by
-at least 90%. Set PHRASE_PASS_RATE=0.95 to require 95%, and PHRASE_SERVERS
-to change the server count.
-Run: python phrase_gym.py
+The pass rate comes from that server's verify() and compute_metrics(), not from
+a separate checker. Run: python phrase_gym.py
 """
 
-from phrase_check import PASS_RATE, SERVER_COUNT, accepted_split, propose_split
+from phrase_check import PASS_RATE, SERVER_COUNT, propose_split
+from resources_servers.intake_phrases.app import score_votes
 
 # Messages the servers must phrase the same way.
 CASES = [
@@ -28,20 +26,20 @@ def votes_for(message, count=None):
 
 
 def main():
-    print(f"Servers: {SERVER_COUNT}")
-    print(f"Required agreement: {PASS_RATE:.0%}")
+    print(f"NeMo Gym servers: {SERVER_COUNT}")
+    print(f"Required pass@1: {PASS_RATE:.0%}")
     for message in CASES:
-        ok, _schedule, _resource, rate = accepted_split(message, votes_for(message))
+        ok, _schedule, _resource, rate = score_votes(message, votes_for(message))
         print(f"{rate:.0%}  {message}")
         if not ok:
-            print("The servers did not agree on an accurate split.")
+            print("NeMo Gym did not accept this split.")
             return 1
 
     base = propose_split(CASES[0])
     other = propose_split(CASES[1])
     agree_count = int(SERVER_COUNT * 0.91)
     mostly = [base] * agree_count + [other] * (SERVER_COUNT - agree_count)
-    ok, _schedule, _resource, rate = accepted_split(CASES[0], mostly)
+    ok, _schedule, _resource, rate = score_votes(CASES[0], mostly)
     print(f"{rate:.0%}  91% of servers matched")
     if not ok:
         print("A match above the bar was rejected.")
@@ -49,64 +47,63 @@ def main():
 
     disagree_count = int(SERVER_COUNT * 0.80)
     mixed = [base] * disagree_count + [other] * (SERVER_COUNT - disagree_count)
-    ok, _schedule, _resource, rate = accepted_split(CASES[0], mixed)
+    ok, _schedule, _resource, rate = score_votes(CASES[0], mixed)
     print(f"{rate:.0%}  80% of servers matched")
     if ok:
         print("Disagreement was accepted.")
         return 1
 
-    # "study for the midterm" and "study for midterm" are the same activity.
     message = "I need to study for midterm"
     exact_count = max(1, int(SERVER_COUNT * 0.70))
     near = (
         [(["study for midterm"], [])] * exact_count
         + [(["study for the midterm"], [])] * (SERVER_COUNT - exact_count)
     )
-    ok, schedule, _resource, rate = accepted_split(message, near)
+    ok, schedule, _resource, rate = score_votes(message, near)
     print(f"{rate:.0%}  similar wording")
     if not ok or schedule != ["study for midterm"]:
         print("Similar phrasing was treated as disagreement.")
         return 1
 
     invented = [(["buy a textbook"], []) for _ in range(SERVER_COUNT)]
-    ok, _schedule, _resource, rate = accepted_split(CASES[0], invented)
+    ok, _schedule, _resource, rate = score_votes(CASES[0], invented)
     print(f"{rate:.0%}  agreed on an invented task")
     if ok:
         print("The servers agreed, but the phrases were not accurate.")
         return 1
 
     bare = [(["study for midterm", "Study on"], []) for _ in range(SERVER_COUNT)]
-    ok, schedule, _resource, rate = accepted_split(
+    ok, schedule, _resource, rate = score_votes(
         "I need to study for midterm and study on",
         bare,
     )
     print(f"{rate:.0%}  dropped a verb with no noun")
-    if not ok or schedule != ["study for midterm"] or any(phrase.lower() == "study on" for phrase in schedule):
+    if not ok or schedule != ["study for midterm"]:
         print("A schedule phrase without a noun was kept.")
         return 1
 
     only_verb = [(["Study on"], []) for _ in range(SERVER_COUNT)]
-    ok, schedule, _resource, rate = accepted_split("I need to study for midterm", only_verb)
-    print(f"{rate:.0%}  only \"Study on\"")
+    ok, schedule, _resource, rate = score_votes("I need to study for midterm", only_verb)
+    print(f'{rate:.0%}  only "Study on"')
     if ok or schedule:
         print("A verb with no noun passed the phrase check.")
         return 1
 
     bare_need = [([], ["talk"]) for _ in range(SERVER_COUNT)]
-    ok, _schedule, resource, rate = accepted_split("I need someone to talk to", bare_need)
+    ok, _schedule, resource, rate = score_votes("I need someone to talk to", bare_need)
     print(f"{rate:.0%}  resource verb without the need")
     if ok or resource:
         print("A resource phrase without the need was kept.")
         return 1
 
     named_need = [([], ["someone to talk to"]) for _ in range(SERVER_COUNT)]
-    ok, _schedule, resource, rate = accepted_split("I need someone to talk to", named_need)
+    ok, _schedule, resource, rate = score_votes("I need someone to talk to", named_need)
     print(f"{rate:.0%}  resource names the need")
     if not ok or resource != ["someone to talk to"]:
         print("A resource phrase that names the need was rejected.")
         return 1
 
-    print("Phrase check passed the gate.")
+    print("NeMo Gym phrase check passed the gate.")
     return 0
 
 
