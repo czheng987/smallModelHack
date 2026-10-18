@@ -2,16 +2,11 @@ import json
 import re
 import time
 
-from openai import OpenAI
-
 from safety_agent import print_safety_result, review_conversation
+from vllm_model import VLLM_MODEL, open_client, reply_text
 
-client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
-    api_key="not-needed",
-)
-
-SCHEDULE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+client = open_client()
+SCHEDULE_MODEL = VLLM_MODEL
 
 # A focused block stays short so one task does not take over the day.
 MAX_WORK_MINUTES = 45
@@ -70,25 +65,6 @@ def split_listed_activities(phrases):
             pieces = [part if weekday_of(part) else f"{part} {day}" for part in pieces]
         expanded.extend(pieces)
     return expanded
-
-
-def message_text(message):
-    chunks = []
-    content = message.content or ""
-    if isinstance(content, list):
-        content = " ".join(
-            part.get("text", "") if isinstance(part, dict) else str(part)
-            for part in content
-        )
-    if content:
-        chunks.append(content)
-    extra = getattr(message, "model_extra", None) or {}
-    if isinstance(extra, dict):
-        for key in ("reasoning_content", "reasoning"):
-            value = extra.get(key)
-            if isinstance(value, str) and value.strip():
-                chunks.append(value)
-    return "\n".join(chunks)
 
 
 def clock_to_minutes(value):
@@ -755,7 +731,7 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
         max_tokens=1200,
         temperature=0.2,
     )
-    return message_text(response.choices[0].message)
+    return reply_text(response.choices[0].message)
 
 
 def release_response(student_text, response_text):

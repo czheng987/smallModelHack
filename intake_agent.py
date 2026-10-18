@@ -2,40 +2,16 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-from openai import OpenAI
-
 from resource_intake import get_resource_needs
 from schedule_intake import get_schedule_needs
+from vllm_model import VLLM_MODEL, open_client, reply_text
 
 
-# Connect to Nemotron running on the Brev server
-client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
-    api_key="not-needed"
-)
-INTAKE_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+# Nemotron is served by vLLM. See serve_vllm.py.
+client = open_client()
+INTAKE_MODEL = VLLM_MODEL
 
 handoff = "none"
-
-
-def message_text(message):
-    """Read the reply, including a reasoning field when the server splits it out."""
-    chunks = []
-    content = message.content or ""
-    if isinstance(content, list):
-        content = " ".join(
-            part.get("text", "") if isinstance(part, dict) else str(part)
-            for part in content
-        )
-    if content:
-        chunks.append(content)
-    extra = getattr(message, "model_extra", None) or {}
-    if isinstance(extra, dict):
-        for key in ("reasoning_content", "reasoning"):
-            value = extra.get(key)
-            if isinstance(value, str) and value.strip():
-                chunks.append(value)
-    return "\n".join(chunks)
 
 
 def phrase_list(value):
@@ -140,7 +116,7 @@ def split_request(user_text):
             max_tokens=800,
             temperature=0,
         )
-    return parse_phrase_lists(message_text(response.choices[0].message))
+    return parse_phrase_lists(reply_text(response.choices[0].message))
 
 
 def _run_intake(intake, phrases):
