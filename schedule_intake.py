@@ -167,21 +167,121 @@ def render_plan(plan):
     return "\n".join(lines).strip()
 
 
-def load_json_value(text):
-    """Pull the first JSON object or list out of a model reply."""
+WEEKDAYS = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
+
+# Words that describe feelings or glue a sentence together, not an assignment.
+GLUE_WORDS = {
+    "i", "im", "me", "my", "a", "an", "the", "and", "or", "to", "of", "for",
+    "with", "on", "in", "at", "by", "is", "am", "are", "be", "been", "was",
+    "have", "has", "had", "do", "does", "did", "so", "very", "really", "just",
+    "too", "much", "lot", "this", "that", "these", "those", "it", "its",
+    "stressed", "stress", "overwhelmed", "overwhelm", "anxious", "anxiety",
+    "behind", "cant", "cannot", "panic", "burned", "burnt", "out", "exhausted",
+    "swamped", "feeling", "feel", "felt", "need", "needs", "help", "please",
+    "today", "tomorrow", "tonight", "due", "deadline", "about", "into", "from",
+    "some", "any", "all", "also", "still", "really", "kinda", "kind", "of",
+}
+GLUE_WORDS.update(day.lower() for day in WEEKDAYS)
+
+
+def significant_tokens(text):
+    words = re.findall(r"[a-z0-9]+", str(text).lower().replace("'", ""))
+    tokens = set()
+    for word in words:
+        if word in GLUE_WORDS:
+            continue
+        if len(word) >= 3 or any(character.isdigit() for character in word):
+            tokens.add(word)
+    return tokens
+
+
+def task_phrases(schedule):
+    """Keep phrases that name work. Drop lines that only say the student is stressed."""
+    return [phrase for phrase in schedule if significant_tokens(phrase)]
+
+
+def shares_task(left, right):
+    return bool(significant_tokens(left) & significant_tokens(right))
+
+
+def weekday_of(text):
+    for name in WEEKDAYS:
+        if re.search(rf"\b{name}\b", str(text), re.IGNORECASE):
+            return name
+    return None
+
+
+def is_canned_example(plan, schedule):
+    """The old prompt sample was Thursday 4:00–4:25, Outline the paper."""
+    work = [block for day in plan for block in day["blocks"] if not block["is_break"]]
+    if len(plan) != 1 or len(work) != 1:
+        return False
+    block = work[0]
+    student = " ".join(schedule).lower()
+    copied = (
+        plan[0]["day"].lower() == "thursday"
+        and block["task"].lower() == "outline the paper"
+        and block["start"] == 16 * 60
+        and block["end"] == 16 * 60 + 25
+    )
+    if not copied:
+        return False
+    return "outline" not in student or "thursday" not in student
+
+
+def plan_uses_student_tasks(plan, schedule, stressed=False):
+    """Accept a model plan only when it schedules the student's own tasks."""
+    phrases = task_phrases(schedule)
+    work = [block for day in plan for block in day["blocks"] if not block["is_break"]]
+    if not phrases or not work or is_canned_example(plan, schedule):
+        return False
+    for block in work:
+        if not any(shares_task(block["task"], phrase) for phrase in phrases):
+            return False
+    for phrase in phrases:
+        matched = [block for block in work if shares_task(block["task"], phrase)]
+        if not matched:
+            return False
+        # A paper or exam is not done in one 25 minute slot.
+        if session_count(phrase, stressed) > 1 and len(matched) < 2:
+            return False
+    return True
+
+
+def load_json_values(text):
+    """Pull every JSON object or list out of a model reply."""
     text = re.sub(r"<think>.*?</think>", " ", text or "", flags=re.DOTALL | re.IGNORECASE)
     text = text.replace("```json", "").replace("```", "")
     decoder = json.JSONDecoder()
-    for index, char in enumerate(text):
-        if char not in "{[":
+    values = []
+    index = 0
+    while index < len(text):
+        if text[index] not in "{[":
+            index += 1
             continue
-        snippet = re.sub(r",\s*([}\]])", r"\1", text[index:])
         try:
-            data, _ = decoder.raw_decode(snippet)
+            data, length = decoder.raw_decode(text[index:])
         except json.JSONDecodeError:
+            snippet = re.sub(r",\s*([}\]])", r"\1", text[index:])
+            try:
+                data, _ = decoder.raw_decode(snippet)
+            except json.JSONDecodeError:
+                index += 1
+                continue
+            values.append(data)
+            index += 1
             continue
-        return data
-    return None
+        values.append(data)
+        index += max(length, 1)
+    return values
 
 
 def days_from_reply(data):
@@ -197,20 +297,175 @@ def days_from_reply(data):
     return []
 
 
-def parse_plan(reply, stressed=False):
-    data = load_json_value(reply)
-    return normalize_plan(days_from_reply(data), stressed=stressed)
+def parse_plan(reply, stressed=False, schedule=None):
+    """Use a model plan only when it names the student's tasks, not the sample."""
+    matched = None
+    first = None
+    for data in load_json_values(reply):
+        plan = normalize_plan(days_from_reply(data), stressed=stressed)
+        if not plan:
+            continue
+        if first is None:
+            first = plan
+        if schedule is not None and plan_uses_student_tasks(plan, schedule, stressed):
+            matched = plan
+            break
+    if schedule is not None:
+        return matched or []
+    return first or []
 
 
-def plan_from_phrases(schedule, stressed):
-    """Build a usable plan when the model reply cannot be read."""
-    blocks = []
-    for phrase in schedule:
-        blocks.append({"task": phrase})
-        blocks.append({"task": "Break"})
-    if blocks:
-        blocks.pop()
-    return normalize_plan([{"day": "Today", "blocks": blocks}], stressed=stressed)
+def session_count(phrase, stressed):
+    """Short blocks, repeated when the task is a paper, exam, or a pile of work."""
+    text = phrase.lower()
+    big = re.search(
+        r"\b(papers?|essays?|projects?|exams?|midterms?|finals?|presentations?)\b",
+        text,
+    )
+    several = re.search(r"\b(two|three|four|several|many)\b", text)
+    small = bool(re.search(r"\b(quiz|quizzes|reading|homework|lab|pset)\b", text))
+    small = small or "problem set" in text
+    if big or several:
+        return 3 if stressed else 4
+    if small or stressed:
+        return 1
+    return 2
+
+
+def task_label(phrase):
+    text = phrase
+    for name in list(WEEKDAYS) + ["today", "tomorrow", "tonight", "due", "deadline"]:
+        text = re.sub(rf"\b{name}\b", " ", text, flags=re.IGNORECASE)
+    text = " ".join(text.split(" "))
+    text = " ".join(text.split())
+    return text or phrase
+
+
+def shared_deadline(note):
+    """A note like 'Friday' or 'all of them Friday' dates every undated task."""
+    day = weekday_of(note)
+    if not day:
+        return None
+    if not significant_tokens(note):
+        return day
+    if re.search(r"\b(all|everything|every|both|them|each)\b", note, re.IGNORECASE):
+        return day
+    return None
+
+
+def phrase_day(phrase, deadline_notes):
+    own = weekday_of(phrase)
+    if own:
+        return own
+    if re.search(r"\btomorrow\b", phrase, re.IGNORECASE):
+        return "Tomorrow"
+    shared = [shared_deadline(note) for note in deadline_notes]
+    shared = [day for day in shared if day]
+    if len(set(shared)) == 1:
+        return shared[0]
+    for note in deadline_notes:
+        day = weekday_of(note)
+        if day and shares_task(phrase, note):
+            return day
+    return "Today"
+
+
+def spill_target(label):
+    if label in WEEKDAYS:
+        index = WEEKDAYS.index(label)
+        return WEEKDAYS[(index - 1) % 7]
+    if label == "Today":
+        return "Tomorrow"
+    if label == "Tomorrow":
+        return "Later"
+    return None
+
+
+def minutes_to_hhmm(minutes):
+    hour, minute = divmod(minutes, 60)
+    return f"{hour:02d}:{minute:02d}"
+
+
+def day_sort_key(label):
+    if label == "Today":
+        return (0, 0)
+    if label == "Tomorrow":
+        return (0, 1)
+    if label in WEEKDAYS:
+        return (1, WEEKDAYS.index(label))
+    return (2, 0)
+
+
+def plan_from_phrases(schedule, stressed, deadline_notes=None):
+    """Build a timed plan from the student's own tasks."""
+    deadline_notes = [note.strip() for note in (deadline_notes or []) if note and note.strip()]
+    phrases = list(task_phrases(schedule))
+    work_note = re.compile(
+        r"\b(papers?|essays?|projects?|exams?|midterms?|finals?|presentations?|"
+        r"quiz|quizzes|reading|homework|lab|pset|assignment|problem set)\b",
+        re.IGNORECASE,
+    )
+    for note in deadline_notes:
+        if work_note.search(note) and not any(shares_task(note, phrase) for phrase in phrases):
+            phrases.append(note)
+    if not phrases:
+        return []
+
+    work_limit = 25 if stressed else MAX_WORK_MINUTES
+    day_limit = 2 * 60 if stressed else MAX_WORK_PER_DAY
+    days = {}
+
+    def ensure(label):
+        if label not in days:
+            days[label] = {"cursor": DAY_START, "work": 0, "blocks": []}
+        return days[label]
+
+    def place(label, task):
+        current = label
+        for _ in range(8):
+            if current is None:
+                return False
+            day = ensure(current)
+            start = day["cursor"]
+            needs_break = bool(day["blocks"]) and "break" not in day["blocks"][-1]["task"].lower()
+            break_len = BREAK_GAP_MINUTES if needs_break else 0
+            if (
+                start + break_len + work_limit <= DAY_END
+                and day["work"] + work_limit <= day_limit
+            ):
+                if needs_break:
+                    break_end = start + BREAK_GAP_MINUTES
+                    day["blocks"].append({
+                        "start": minutes_to_hhmm(start),
+                        "end": minutes_to_hhmm(break_end),
+                        "task": "Break",
+                    })
+                    start = break_end
+                end = start + work_limit
+                day["blocks"].append({
+                    "start": minutes_to_hhmm(start),
+                    "end": minutes_to_hhmm(end),
+                    "task": task,
+                })
+                day["cursor"] = end
+                day["work"] += work_limit
+                return True
+            current = spill_target(current)
+        return False
+
+    for phrase in phrases:
+        label = task_label(phrase)
+        day_name = phrase_day(phrase, deadline_notes)
+        for _ in range(session_count(phrase, stressed)):
+            place(day_name, label)
+
+    ordered = sorted(days.items(), key=lambda item: day_sort_key(item[0]))
+    raw_days = [
+        {"day": label, "blocks": bucket["blocks"]}
+        for label, bucket in ordered
+        if bucket["blocks"]
+    ]
+    return normalize_plan(raw_days, stressed=stressed)
 
 
 DEADLINE_HINT = re.compile(
@@ -277,9 +532,11 @@ def ask_for_plan(schedule, deadline_notes, stressed):
                     "- Put a 10 minute break between work blocks.\n"
                     "- Do not overlap any blocks.\n"
                     "- Stay between 9:00 AM and 9:00 PM.\n"
-                    "- If a deadline is missing, start from today and spread the work out.\n"
-                    "Return JSON only:\n"
-                    '{"days": [{"day": "Thursday", "blocks": [{"start": "16:00", "end": "16:25", "task": "Outline the paper"}]}]}'
+                    "- If a deadline is missing, use Today and spread the work across the day.\n"
+                    "- Copy each task from the student's own words. Do not invent a task.\n"
+                    "- A paper, exam, or project needs several blocks, not one short block.\n"
+                    "Return JSON only, with 24-hour times and no sample task:\n"
+                    '{"days":[{"day":"Today","blocks":[{"start":"09:00","end":"09:45","task":"<one student task>"}]}]}'
                 ),
             },
             {
@@ -321,13 +578,16 @@ def get_schedule_needs(schedule):
 
     try:
         reply = ask_for_plan(schedule, deadline_notes, stressed)
-        plan = parse_plan(reply, stressed=stressed)
+        plan = parse_plan(reply, stressed=stressed, schedule=schedule)
     except Exception as error:
         print(f"The schedule planner could not be reached: {error}")
         plan = []
 
     if not plan:
-        plan = plan_from_phrases(schedule, stressed)
+        plan = plan_from_phrases(schedule, stressed, deadline_notes)
+    if not plan:
+        print("I don't see an assignment, class, or exam to put on a schedule.")
+        return ""
 
     rendered = render_plan(plan)
     if not release_response("\n".join(schedule), rendered):
