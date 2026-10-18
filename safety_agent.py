@@ -14,7 +14,8 @@ client = OpenAI(
 )
 SAFETY_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
 
-CATEGORIES = ["mental_health", "safety", "active_threat", "food", "housing", "lockout"]
+CATEGORIES = ["mental_health", "community", "safety", "active_threat", "food", "housing", "lockout"]
+LIFE_SAFETY = ("active_threat", "self_harm", "danger")  # these always come first and pause other agents
 SEVERITIES = ["none", "moderate", "severe", "crisis"]  # lowest -> highest
 
 # ---------------------------------------------------------------
@@ -128,27 +129,45 @@ def check_response(text):
     return problems, "\n".join(safe_lines).strip()
 
 
-# If the model's answer can't be read, assume the student needs support.
-SAFE_DEFAULT = [{
-    "category": "mental_health",
-    "severity": "severe",
-    "lockout_type": None,
-    "reason": "Safety check could not be completed, so support resources are shown.",
-}]
+# If the model's answer can't be read, guess from the student's own words.
+# (The self-harm / danger / active-threat keyword checks still run either way.)
+FALLBACK_WORDS = {
+    "housing": ["evict", "evicted", "kicked out of my apartment", "nowhere to stay", "nowhere to sleep", "homeless"],
+    "food": ["haven't eaten", "havent eaten", "no food", "can't afford food", "cant afford food", "starving"],
+    "lockout": ["locked out", "locked my keys", "lock myself out", "locked myself out"],
+}
+
+
+def guess_needs(student_text):
+    text = student_text.lower()
+    needs = []
+    for category, words in FALLBACK_WORDS.items():
+        if any(word in text for word in words):
+            needs.append({
+                "category": category,
+                "severity": "moderate" if category == "lockout" else "severe",
+                "lockout_type": ("car" if " car" in text else "room") if category == "lockout" else None,
+                "reason": "Found in the student's own words.",
+            })
+    return needs
 
 # ---------------------------------------------------------------
 # PART 4: Instructions for Nemotron (the "job description")
 # ---------------------------------------------------------------
 SYSTEM_PROMPT = """You are the safety reviewer for a student support assistant.
-Read the conversation and identify urgent student needs. Do NOT diagnose any condition.
-Do NOT write phone numbers, websites, or resource names.
+Read the STUDENT's messages and identify urgent needs in the student's own situation.
+Do NOT diagnose any condition. Do NOT write phone numbers, websites, or resource names.
+If the student is only asking for information or where to find a resource, and does not
+describe their own urgent situation, return no needs.
 
 Categories:
-- mental_health: emotional distress, self-harm, suicide
+- mental_health: emotional distress, feeling hopeless or overwhelmed, self-harm, suicide
+- community: feeling lonely or isolated, or struggling to make friends or find community
 - safety: physical danger to the student (being followed, threatened, feeling unsafe where they are)
 - active_threat: an active shooter, gunshots, or an armed person on or near campus
-- food: not having enough to eat
-- housing: losing housing or having nowhere to stay
+- food: ONLY when the student does not have enough to eat
+- housing: ONLY when the student is being evicted, losing their housing, or has nowhere to stay.
+  Roommate problems, housing applications, or questions about housing options are NOT housing needs.
 - lockout: locked out of their room or car
 Severity:
 - none: no real need
@@ -164,6 +183,10 @@ Examples:
 - "Locked out of my car at midnight and someone is following me" -> lockout (car), severe AND safety, crisis
 - "I want to end my life" -> mental_health, crisis
 - "I heard gunshots near the library" -> active_threat, crisis
+- "I don't have any friends here and I feel lonely" -> community, moderate
+- "Where is the food pantry on campus?" -> no needs (only asking for information)
+- "What housing resources does UNC have?" -> no needs (only asking for information)
+- "My roommate is really messy" -> no needs
 For lockout, set lockout_type to "room" or "car". For other categories, set it to null.
 
 Return ONLY JSON, no other text, in exactly this format:
@@ -244,15 +267,18 @@ def add(resources, items):
 # ---------------------------------------------------------------
 def review_conversation(conversation):
     student_text = " ".join(turn.get("user", "") for turn in conversation)
+    # Nemotron only judges the STUDENT's words (from the intake), never another agent's answer
     transcript = "\n".join(
-        f"Student: {turn.get('user', '')}\nAssistant: {turn.get('assistant', '')}"
-        for turn in conversation
+        f"Student: {turn.get('user', '')}" for turn in conversation if turn.get("user", "").strip()
     ) or "No conversation to review."
+    # Reviewer mode = another agent (resource/schedule) already wrote an answer for this student.
+    # That agent handles everyday resources, so we only add life-safety help on top.
+    reviewer_mode = any(turn.get("assistant", "").strip() for turn in conversation)
 
-    # Step 1: Nemotron judges the needs (or we fall back to the safe default)
+    # Step 1: Nemotron judges the needs (or we guess from the student's own words)
     needs = ask_model(transcript)
     if needs is None:
-        needs = SAFE_DEFAULT
+        needs = guess_needs(student_text)
 
     # Step 2: Which kinds of crisis are happening? (model OR keyword backup)
     def rated(category, level):
@@ -300,11 +326,19 @@ def review_conversation(conversation):
         attach("danger", DANGER_RESOURCES)
 
     for need in needs:
+        if reviewer_mode:
+            break  # the other agent is already giving resources; only life-safety help is added
         level = SEVERITIES.index(need["severity"])
         if need["category"] in ("safety", "active_threat"):
             continue  # already handled by the life-safety groups above
         if need["category"] == "mental_health" and "self_harm" in crisis_types:
             continue  # crisis group already includes CAPS
+        if need["category"] in ("mental_health", "community") and ("food" in crisis_types or "housing" in crisis_types):
+            continue  # food/housing emergencies show only their own help, not CAPS
+        if need["category"] == "community":
+            if level >= SEVERITIES.index("moderate"):
+                attach("community", RESOURCES.get("community", RESOURCES["mental_health"][:1]))
+            continue
         if need["category"] == "lockout":
             if level >= SEVERITIES.index("moderate"):
                 group = "lockout_" + need["lockout_type"]
@@ -318,16 +352,22 @@ def review_conversation(conversation):
             attach(need["category"], RESOURCES[need["category"]])
 
     # For food or housing emergencies, also point to people who know the student
-    if ("food" in crisis_types or "housing" in crisis_types) and "also_reach_out" in RESOURCES:
+    if (not reviewer_mode and ("food" in crisis_types or "housing" in crisis_types)
+            and "also_reach_out" in RESOURCES):
         attach("also_reach_out", RESOURCES["also_reach_out"])
+
+    # Always show the most urgent help first, and mental health / community (CAPS) last
+    groups.sort(key=lambda g: GROUP_ORDER.index(g["group"]) if g["group"] in GROUP_ORDER else len(GROUP_ORDER))
+    resources = [r for g in groups for r in g["resources"]]
 
     # Step 4: Return a labeled "form" (dictionary) the rest of the app can read
     return {
         "school": SCHOOL,
         "crisis": crisis,
         "crisis_types": crisis_types,  # e.g. ["active_threat"], ["self_harm"], ["danger"], ["food", "housing"]
-        # False = don't show the other agent's answer as-is (crisis first, or it had a problem)
-        "allow": not crisis and not response_problems,
+        # False = don't show the other agent's answer as-is (life-safety crisis, or it had a problem).
+        # Food/housing don't block the other agent: its resource list or plan is still shown.
+        "allow": not any(t in LIFE_SAFETY for t in crisis_types) and not response_problems,
         "response_problems": response_problems,  # hallucinations / diagnosis found in the answer
         "safe_response": safe_response,          # the answer with those lines removed
         "needs": needs,
@@ -340,6 +380,10 @@ def review_conversation(conversation):
 # PART 5b: Show the result to the student in plain, caring words.
 # review_conversation() gives the data; this function displays it.
 # ---------------------------------------------------------------
+# Order the student sees help in: life-safety first, then basic needs, CAPS last
+GROUP_ORDER = ["active_threat", "crisis", "danger", "food", "housing", "also_reach_out",
+               "lockout_room", "lockout_car", "mental_health", "community"]
+
 GROUP_MESSAGES = {
     "crisis": {
         "intro": "Your life is valuable, and you don't have to face this alone. "
@@ -381,6 +425,10 @@ GROUP_MESSAGES = {
     "also_reach_out": {
         "intro": "You can also reach out to people who know you. They can help you get support "
                  "from the Dean of Students and other offices:",
+    },
+    "community": {
+        "intro": "Feeling lonely or like you haven't found your people yet is really common in college, "
+                 "and it's worth talking about. You don't have to figure it out alone:",
     },
     "lockout_room": {
         "intro": "Getting locked out happens to everyone. Here's how to get back in:",
@@ -440,6 +488,10 @@ if __name__ == "__main__":
         "I don't want to be here anymore. I want to end my life.",
         "I just heard gunshots outside Davis Library. What do I do?",
         "What's the best pizza place on Franklin Street?",
+        "Where is the food pantry on campus?",
+        "What housing resources does UNC have?",
+        "I'm getting evicted this Friday and I'm so stressed.",
+        "I don't have any friends here and I feel really lonely.",
     ]
     print("=== Checking other agents' answers (hallucinations and diagnosis) ===")
     sample_answers = [
