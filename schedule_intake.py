@@ -3,7 +3,7 @@ import re
 
 from openai import OpenAI
 
-from safety_agent import has_crisis_keyword, print_safety_result, review_conversation
+from safety_agent import print_safety_result, review_conversation
 
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
