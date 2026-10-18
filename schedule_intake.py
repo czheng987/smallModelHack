@@ -4,7 +4,14 @@ import time
 from datetime import datetime, timedelta
 
 from safety_agent import print_safety_result, review_conversation
-from vllm_model import VLLM_MODEL, open_client, planner_urls, reply_text, unreachable
+from vllm_model import (
+    NEMOTRON_BASE_URL,
+    VLLM_MODEL,
+    open_client,
+    planner_urls,
+    reply_text,
+    unreachable,
+)
 
 SCHEDULE_MODEL = VLLM_MODEL
 
@@ -1011,8 +1018,8 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
         if stressed
         else "Use 45 minute sittings and at most 4 hours of work in a day."
     )
-    # A short decision is enough. The local planner places the clock times, so this
-    # call does not spend tokens writing every block.
+    # vLLM only returns the split. Thinking stays off so this call stays short.
+    # The local planner places the clock times.
     request = {
         "model": SCHEDULE_MODEL,
         "messages": [
@@ -1020,7 +1027,7 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                 "role": "system",
                 "content": (
                     "You decide how a UNC student's tasks should be split. "
-                    "You do not write clock times. Keep the reasoning to a few sentences.\n"
+                    "You do not write clock times. Do not think at length. Return the JSON immediately.\n"
                     f"The student is messaging you on {weekday} at {clock}.\n"
                     f"{load}\n"
                     f"There are {len(schedule)} tasks. Look at each task and its deadline.\n"
@@ -1048,9 +1055,9 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                 ),
             },
         ],
-        "max_tokens": 800,
+        "max_tokens": 160,
         "temperature": 0.2,
-        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     }
     last_error = None
     for url in planner_urls():
@@ -1061,6 +1068,48 @@ def ask_for_plan(schedule, deadline_notes, stressed, now=None):
                 raise
             last_error = error
     raise last_error or ConnectionError("The schedule planner could not be reached.")
+
+
+def ask_unassisted(schedule, deadline_notes, stressed, now=None):
+    """Time the original server writing every block, without the short vLLM decision."""
+    numbered = "\n".join(f"- {phrase}" for phrase in schedule)
+    deadlines = "\n".join(f"- {note}" for note in deadline_notes) or "- No extra deadlines were given."
+    weekday, now_minutes = current_moment(now)
+    clock = minutes_to_clock(now_minutes)
+    load = (
+        "The student sounds stressed. Keep each sitting to 25 minutes and about 2 hours in a day."
+        if stressed
+        else "Use 45 minute sittings and at most 4 hours of work in a day."
+    )
+    request = {
+        "model": SCHEDULE_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You write a full schedule. Think through every task, then list every day and every block.\n"
+                    f"The student is messaging you on {weekday} at {clock}.\n"
+                    f"{load}\n"
+                    "Put a 10 minute break between work blocks. Do not overlap blocks. "
+                    "Stay between 9:00 AM and 9:00 PM. Use only the student's tasks.\n"
+                    "Return JSON only:\n"
+                    '{"days":[{"day":"Sunday, Oct 18","blocks":[{"start":"09:00","end":"09:45","task":"<student task>"}]}]}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Right now it is {weekday} {clock}.\n\n"
+                    f"Tasks:\n{numbered}\n\n"
+                    f"Deadlines:\n{deadlines}"
+                ),
+            },
+        ],
+        "max_tokens": 700,
+        "temperature": 0.2,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+    }
+    return _complete(open_client(NEMOTRON_BASE_URL), request)
 
 
 def _complete(model_client, request):
@@ -1114,12 +1163,9 @@ def get_schedule_needs(schedule):
 
     deadline_notes = collect_deadlines(schedule)
 
-    # One clock for the whole planning run. "Without" stops after the local plan.
-    # "With" keeps going through the vLLM call and the plan built from its decision.
-    program_started = time.perf_counter()
-    local_plan = plan_from_phrases(schedule, stressed, deadline_notes, now=moment)
-    before_seconds = time.perf_counter() - program_started
-
+    # With vLLM: a short decision, then the local planner places the times.
+    # Without vLLM: the original server writes every block, which takes longer.
+    with_started = time.perf_counter()
     reply = ""
     reached = True
     try:
@@ -1127,8 +1173,7 @@ def get_schedule_needs(schedule):
     except Exception as error:
         reached = False
         print(f"The schedule planner could not be reached: {error}")
-
-    plan = local_plan
+    plan = plan_from_phrases(schedule, stressed, deadline_notes, now=moment)
     if reply:
         guidance = parse_task_analysis(reply, schedule)
         if guidance:
@@ -1137,8 +1182,16 @@ def get_schedule_needs(schedule):
             )
             if guided:
                 plan = guided
-    with_seconds = time.perf_counter() - program_started
-    print(f"Runtime without Red Hat vLLM: {format_runtime(before_seconds)}")
+    with_seconds = time.perf_counter() - with_started
+
+    without_started = time.perf_counter()
+    try:
+        ask_unassisted(schedule, deadline_notes, stressed, now=moment)
+    except Exception:
+        plan_from_phrases(schedule, stressed, deadline_notes, now=moment)
+    without_seconds = time.perf_counter() - without_started
+
+    print(f"Runtime without Red Hat vLLM: {format_runtime(without_seconds)}")
     if reached:
         print(f"Runtime with Red Hat vLLM: {format_runtime(with_seconds)}")
     else:
