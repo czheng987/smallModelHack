@@ -4,6 +4,8 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from safety_agent import print_safety_result, review_conversation
+
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
     api_key="not-needed",
@@ -213,6 +215,15 @@ def format_resource(index, record):
     return "\n".join(lines)
 
 
+def release_response(student_text, response_text):
+    """Run the drafted resource list through the safety agent before showing it."""
+    result = review_conversation([
+        {"user": student_text, "assistant": response_text},
+    ])
+    print_safety_result(result)
+    return result.get("allow", True)
+
+
 def get_resource_needs(resource):
     """Read resource[] and list 2-5 matching entries from unc_resources.json."""
     resource = clean_phrases(resource)
@@ -230,10 +241,15 @@ def get_resource_needs(resource):
         print("I could not find a matching resource in the campus list.")
         return []
 
-    print("Here are resources that match what you asked for:")
     rendered = []
+    blocks = []
     for index, record in enumerate(chosen, start=1):
-        block = format_resource(index, record)
-        print(block)
+        blocks.append(format_resource(index, record))
         rendered.append(record)
+    response_text = "\n".join(blocks)
+    if not release_response("\n".join(resource), response_text):
+        return rendered
+
+    print("Here are resources that match what you asked for:")
+    print(response_text)
     return rendered
