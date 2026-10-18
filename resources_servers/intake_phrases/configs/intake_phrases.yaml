@@ -1,0 +1,7 @@
+intake_phrases:
+  resources_servers:
+    intake_phrases:
+      entrypoint: app.py
+      domain: instruction_following
+      verified: false
+      description: Scores UNC intake phrase votes and keeps a split at 90% agreement

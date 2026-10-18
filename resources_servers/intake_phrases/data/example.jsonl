@@ -1,0 +1,4 @@
+{"responses_create_params": {"input": "I need to schedule my appointment, study for midterm, and sign housings"}, "student_message": "I need to schedule my appointment, study for midterm, and sign housings", "schedule": ["schedule my appointment", "study for midterm", "sign housings"], "resource": []}
+{"responses_create_params": {"input": "I have three papers due Friday and I need someone to talk to"}, "student_message": "I have three papers due Friday and I need someone to talk to", "schedule": ["three papers due Friday"], "resource": ["someone to talk to"]}
+{"responses_create_params": {"input": "Where can I find counseling on campus?"}, "student_message": "Where can I find counseling on campus?", "schedule": [], "resource": ["counseling on campus"]}
+{"responses_create_params": {"input": "thanks"}, "student_message": "thanks", "schedule": [], "resource": []}

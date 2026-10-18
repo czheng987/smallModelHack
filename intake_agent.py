@@ -4,7 +4,8 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from phrase_check import PASS_RATE, SERVER_COUNT, accepted_split, arrange_phrases
+from phrase_check import PASS_RATE, SERVER_COUNT, arrange_phrases
+from resources_servers.intake_phrases.app import score_votes
 from resource_intake import get_resource_needs
 from schedule_intake import format_runtime, get_schedule_needs
 from vllm_model import (
@@ -235,7 +236,7 @@ def split_request(user_text):
     votes, with_seconds, reached = timed_vllm_votes(user_text)
     print(f"Timing the same {SERVER_COUNT} votes on the original server, one at a time.")
     without_seconds = timed_unassisted(user_text)
-    ok, schedule, resource, rate = accepted_split(user_text, votes)
+    ok, schedule, resource, rate = score_votes(user_text, votes)
     if ok:
         print(
             f"Phrase check passed at {rate:.0%} agreement "
