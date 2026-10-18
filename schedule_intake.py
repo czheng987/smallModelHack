@@ -1,5 +1,6 @@
 import json
 import re
+import time
 
 from openai import OpenAI
 
@@ -297,7 +298,45 @@ def days_from_reply(data):
     return []
 
 
-def parse_plan(reply, stressed=False, schedule=None):
+def current_moment(now=None):
+    """Weekday and minute-of-day when the student messages."""
+    if now is None:
+        now = time.localtime()
+    return WEEKDAYS[now.tm_wday], now.tm_hour * 60 + now.tm_min
+
+
+def earliest_start(day_offset, now_minutes):
+    """First minute a block may start. Today cannot begin in the past."""
+    if day_offset > 0:
+        return DAY_START
+    if now_minutes < DAY_START:
+        return DAY_START
+    start = now_minutes + 5
+    if start % 5:
+        start += 5 - (start % 5)
+    if start >= DAY_END:
+        return None
+    return start
+
+
+def is_today_label(label, weekday):
+    text = str(label).strip().lower()
+    return text in {weekday.lower(), "today", "tonight"}
+
+
+def plan_respects_clock(plan, now=None):
+    weekday, now_minutes = current_moment(now)
+    earliest = earliest_start(0, now_minutes)
+    for day in plan:
+        if not is_today_label(day["day"], weekday):
+            continue
+        for block in day["blocks"]:
+            if earliest is None or block["start"] < earliest:
+                return False
+    return True
+
+
+def parse_plan(reply, stressed=False, schedule=None, now=None):
     """Use a model plan only when it names the student's tasks, not the sample."""
     matched = None
     first = None
@@ -307,7 +346,11 @@ def parse_plan(reply, stressed=False, schedule=None):
             continue
         if first is None:
             first = plan
-        if schedule is not None and plan_uses_student_tasks(plan, schedule, stressed):
+        if (
+            schedule is not None
+            and plan_uses_student_tasks(plan, schedule, stressed)
+            and plan_respects_clock(plan, now)
+        ):
             matched = plan
             break
     if schedule is not None:
@@ -315,21 +358,66 @@ def parse_plan(reply, stressed=False, schedule=None):
     return first or []
 
 
-def session_count(phrase, stressed):
-    """Short blocks, repeated when the task is a paper, exam, or a pile of work."""
-    text = phrase.lower()
-    big = re.search(
-        r"\b(papers?|essays?|projects?|exams?|midterms?|finals?|presentations?)\b",
-        text,
+ONE_TIME_EVENT = re.compile(
+    r"\b(shop(?:ping)?|grocer(?:y|ies)|errands?|appointments?|haircuts?|"
+    r"pick\s?up|drop\s?off|laundry|pharmacy|bank|mail|packages?)\b",
+    re.IGNORECASE,
+)
+STUDY_WORD = re.compile(
+    r"\b(study|studying|review|revise|prep|prepare|preparing|practice)\b",
+    re.IGNORECASE,
+)
+EXAM_WORD = re.compile(r"\b(midterms?|finals?|exams?|tests?)\b", re.IGNORECASE)
+SIZE_WORD = r"small|short|quick|minor|little"
+LARGE_WORD = r"large|big|major|long|huge"
+WORK_NOUN = r"projects?|assignments?|papers?|essays?"
+
+
+def explicitly_small(phrase):
+    return re.search(rf"\b(?:{SIZE_WORD})\b", phrase, re.IGNORECASE) and re.search(
+        rf"\b(?:{WORK_NOUN})\b", phrase, re.IGNORECASE
     )
-    several = re.search(r"\b(two|three|four|several|many)\b", text)
-    small = bool(re.search(r"\b(quiz|quizzes|reading|homework|lab|pset)\b", text))
-    small = small or "problem set" in text
-    if big or several:
-        return 3 if stressed else 4
-    if small or stressed:
+
+
+def explicitly_large(phrase):
+    return re.search(rf"\b(?:{LARGE_WORD})\b", phrase, re.IGNORECASE) and re.search(
+        rf"\b(?:{WORK_NOUN})\b", phrase, re.IGNORECASE
+    )
+
+
+def activity_kind(phrase):
+    """once: one sitting. chunks: split across periods. exam: study chunks plus one sitting."""
+    if ONE_TIME_EVENT.search(phrase) and not EXAM_WORD.search(phrase) and not STUDY_WORD.search(phrase):
+        return "once"
+    if explicitly_large(phrase):
+        return "chunks"
+    if STUDY_WORD.search(phrase) and EXAM_WORD.search(phrase):
+        return "chunks"
+    if EXAM_WORD.search(phrase):
+        return "exam"
+    if explicitly_small(phrase):
+        return "once"
+    if re.search(r"\b(papers?|essays?|theses|thesis|capstones?|presentations?|projects?)\b", phrase, re.IGNORECASE):
+        return "chunks"
+    if (
+        re.search(r"\b(assignments?|homework|quiz|quizzes|worksheets?|labs?|psets?|readings?)\b", phrase, re.IGNORECASE)
+        or "problem set" in phrase.lower()
+    ):
+        return "once"
+    if re.search(r"\b(two|three|four|several|many)\b", phrase, re.IGNORECASE):
+        return "chunks"
+    return "once"
+
+
+def session_count(phrase, stressed):
+    """How many work blocks this activity should become."""
+    kind = activity_kind(phrase)
+    if kind == "once":
         return 1
-    return 2
+    count = 3 if stressed else 4
+    if kind == "exam":
+        return count + 1
+    return count
 
 
 def task_label(phrase):
@@ -370,39 +458,90 @@ def phrase_day(phrase, deadline_notes):
     return "Today"
 
 
-def spill_target(label):
-    if label in WEEKDAYS:
-        index = WEEKDAYS.index(label)
-        return WEEKDAYS[(index - 1) % 7]
-    if label == "Today":
-        return "Tomorrow"
-    if label == "Tomorrow":
-        return "Later"
-    return None
-
-
 def minutes_to_hhmm(minutes):
     hour, minute = divmod(minutes, 60)
     return f"{hour:02d}:{minute:02d}"
 
 
-def day_sort_key(label):
-    if label == "Today":
-        return (0, 0)
-    if label == "Tomorrow":
-        return (0, 1)
-    if label in WEEKDAYS:
-        return (1, WEEKDAYS.index(label))
-    return (2, 0)
+def upcoming_offset(day_name, today_name):
+    """Days from today until day_name. 0 means today."""
+    if day_name in (None, "Today", "tonight"):
+        return 0
+    if day_name == "Tomorrow":
+        return 1
+    today_index = WEEKDAYS.index(today_name)
+    target_index = WEEKDAYS.index(day_name)
+    return (target_index - today_index) % 7
 
 
-def plan_from_phrases(schedule, stressed, deadline_notes=None):
-    """Build a timed plan from the student's own tasks."""
+def day_name_from_offset(today_name, offset):
+    today_index = WEEKDAYS.index(today_name)
+    return WEEKDAYS[(today_index + offset) % 7]
+
+
+def has_named_deadline(phrase, deadline_notes):
+    if weekday_of(phrase) or re.search(r"\b(today|tomorrow|tonight)\b", phrase, re.IGNORECASE):
+        return True
+    for note in deadline_notes:
+        if weekday_of(note) or re.search(r"\b(today|tomorrow|tonight)\b", note, re.IGNORECASE):
+            return True
+    return False
+
+
+def spread_sessions(day_offsets, count, label, minutes):
+    if not day_offsets:
+        day_offsets = [0]
+    buckets = {offset: [] for offset in day_offsets}
+    for index in range(count):
+        buckets[day_offsets[index % len(day_offsets)]].append(label)
+    sessions = []
+    for offset in day_offsets:
+        for task in buckets[offset]:
+            sessions.append({"offset": offset, "task": task, "minutes": minutes})
+    return sessions
+
+
+def sessions_for_phrase(phrase, stressed, deadline_notes, today_name):
+    """Turn one phrase into one sitting or several chunks on different days."""
+    label = task_label(phrase)
+    named = phrase_day(phrase, deadline_notes)
+    due = upcoming_offset(named, today_name) if has_named_deadline(phrase, deadline_notes) else None
+    kind = activity_kind(phrase)
+    chunk_minutes = 25 if stressed else MAX_WORK_MINUTES
+    once_minutes = MAX_WORK_MINUTES if ONE_TIME_EVENT.search(phrase) else chunk_minutes
+    chunk_count = 3 if stressed else 4
+
+    if kind == "once":
+        return [{"offset": 0 if due is None else due, "task": label, "minutes": once_minutes}]
+
+    if kind == "exam":
+        if due in (None, 0):
+            # No future day was named, so break the studying into chunks.
+            # A same-day exam is one sitting because there is no earlier day left.
+            if due == 0:
+                return [{"offset": 0, "task": label, "minutes": chunk_minutes}]
+            return spread_sessions(
+                list(range(chunk_count)), chunk_count, f"Study for {label}", chunk_minutes
+            )
+        study_days = list(range(due))
+        sessions = spread_sessions(study_days, chunk_count, f"Study for {label}", chunk_minutes)
+        sessions.append({"offset": due, "task": label, "minutes": chunk_minutes})
+        return sessions
+
+    if due is None:
+        window = list(range(chunk_count))
+    else:
+        window = list(range(due + 1)) or [0]
+    return spread_sessions(window, chunk_count, label, chunk_minutes)
+
+
+def plan_from_phrases(schedule, stressed, deadline_notes=None, now=None):
+    """Build a timed plan from the student's own tasks, starting at the message time."""
     deadline_notes = [note.strip() for note in (deadline_notes or []) if note and note.strip()]
     phrases = list(task_phrases(schedule))
     work_note = re.compile(
         r"\b(papers?|essays?|projects?|exams?|midterms?|finals?|presentations?|"
-        r"quiz|quizzes|reading|homework|lab|pset|assignment|problem set)\b",
+        r"quiz|quizzes|reading|homework|lab|pset|assignment|problem set|shop(?:ping)?)\b",
         re.IGNORECASE,
     )
     for note in deadline_notes:
@@ -411,27 +550,34 @@ def plan_from_phrases(schedule, stressed, deadline_notes=None):
     if not phrases:
         return []
 
-    work_limit = 25 if stressed else MAX_WORK_MINUTES
+    today_name, now_minutes = current_moment(now)
     day_limit = 2 * 60 if stressed else MAX_WORK_PER_DAY
     days = {}
 
-    def ensure(label):
+    def ensure(label, offset):
         if label not in days:
-            days[label] = {"cursor": DAY_START, "work": 0, "blocks": []}
+            days[label] = {
+                "offset": offset,
+                "cursor": earliest_start(offset, now_minutes),
+                "work": 0,
+                "blocks": [],
+            }
         return days[label]
 
-    def place(label, task):
-        current = label
-        for _ in range(8):
-            if current is None:
-                return False
-            day = ensure(current)
+    def place(offset, task, minutes, latest_offset):
+        current = offset
+        while current <= latest_offset:
+            label = day_name_from_offset(today_name, current)
+            day = ensure(label, current)
             start = day["cursor"]
+            if start is None:
+                current += 1
+                continue
             needs_break = bool(day["blocks"]) and "break" not in day["blocks"][-1]["task"].lower()
             break_len = BREAK_GAP_MINUTES if needs_break else 0
             if (
-                start + break_len + work_limit <= DAY_END
-                and day["work"] + work_limit <= day_limit
+                start + break_len + minutes <= DAY_END
+                and day["work"] + minutes <= day_limit
             ):
                 if needs_break:
                     break_end = start + BREAK_GAP_MINUTES
@@ -441,31 +587,44 @@ def plan_from_phrases(schedule, stressed, deadline_notes=None):
                         "task": "Break",
                     })
                     start = break_end
-                end = start + work_limit
+                end = start + minutes
                 day["blocks"].append({
                     "start": minutes_to_hhmm(start),
                     "end": minutes_to_hhmm(end),
                     "task": task,
                 })
                 day["cursor"] = end
-                day["work"] += work_limit
+                day["work"] += minutes
                 return True
-            current = spill_target(current)
+            current += 1
         return False
 
     for phrase in phrases:
-        label = task_label(phrase)
-        day_name = phrase_day(phrase, deadline_notes)
-        for _ in range(session_count(phrase, stressed)):
-            place(day_name, label)
+        kind = activity_kind(phrase)
+        named_due = None
+        if has_named_deadline(phrase, deadline_notes):
+            named_due = upcoming_offset(phrase_day(phrase, deadline_notes), today_name)
+        for session in sessions_for_phrase(phrase, stressed, deadline_notes, today_name):
+            if kind == "once":
+                latest = session["offset"] + 2
+            elif kind == "exam" and session["task"].startswith("Study for "):
+                latest = named_due - 1 if named_due else session["offset"]
+            elif kind == "exam":
+                latest = session["offset"]
+            elif named_due is None:
+                latest = session["offset"] + 2
+            else:
+                latest = named_due
+            place(session["offset"], session["task"], session["minutes"], max(latest, session["offset"]))
 
-    ordered = sorted(days.items(), key=lambda item: day_sort_key(item[0]))
+    ordered = sorted(days.items(), key=lambda item: item[1]["offset"])
     raw_days = [
         {"day": label, "blocks": bucket["blocks"]}
         for label, bucket in ordered
         if bucket["blocks"]
     ]
-    return normalize_plan(raw_days, stressed=stressed)
+    # Durations are already chosen, including a full block for a one-time errand.
+    return normalize_plan(raw_days, stressed=False)
 
 
 DEADLINE_HINT = re.compile(
@@ -504,9 +663,11 @@ def collect_deadlines(schedule):
     return [answer]
 
 
-def ask_for_plan(schedule, deadline_notes, stressed):
+def ask_for_plan(schedule, deadline_notes, stressed, now=None):
     numbered = "\n".join(f"- {phrase}" for phrase in schedule)
     deadlines = "\n".join(f"- {note}" for note in deadline_notes) or "- No extra deadlines were given."
+    weekday, now_minutes = current_moment(now)
+    clock = minutes_to_clock(now_minutes)
     load = (
         "The student sounds stressed. Use 25 minute work blocks, extra breaks, "
         "and about 2 hours of work in a day."
@@ -525,6 +686,7 @@ def ask_for_plan(schedule, deadline_notes, stressed):
                     "The student does not tell you how long each assignment takes. "
                     "Do not ask them for a duration or a start time. "
                     "Estimate a realistic duration from the task itself.\n"
+                    f"The student is messaging you on {weekday} at {clock}.\n"
                     f"{load}\n"
                     "Rules:\n"
                     "- Use only the tasks they named. Do not invent extra exams or jobs.\n"
@@ -532,16 +694,22 @@ def ask_for_plan(schedule, deadline_notes, stressed):
                     "- Put a 10 minute break between work blocks.\n"
                     "- Do not overlap any blocks.\n"
                     "- Stay between 9:00 AM and 9:00 PM.\n"
-                    "- If a deadline is missing, use Today and spread the work across the day.\n"
+                    f"- Do not schedule {weekday} before {clock}. "
+                    "If that is before 9:00 AM, start at 9:00 AM. "
+                    "If it is after 9:00 PM, start the next day.\n"
+                    "- Shopping, errands, appointments, homework, quizzes, and small "
+                    "assignments or small projects are one block.\n"
+                    "- Studying for a midterm, exam, or final is several blocks on different days.\n"
+                    "- Large projects, papers, and essays are several blocks on different days.\n"
                     "- Copy each task from the student's own words. Do not invent a task.\n"
-                    "- A paper, exam, or project needs several blocks, not one short block.\n"
                     "Return JSON only, with 24-hour times and no sample task:\n"
-                    '{"days":[{"day":"Today","blocks":[{"start":"09:00","end":"09:45","task":"<one student task>"}]}]}'
+                    '{"days":[{"day":"Monday","blocks":[{"start":"HH:MM","end":"HH:MM","task":"<one student task>"}]}]}'
                 ),
             },
             {
                 "role": "user",
                 "content": (
+                    f"Right now it is {weekday} {clock}.\n\n"
                     f"Student's words:\n{numbered}\n\n"
                     f"Deadlines:\n{deadlines}"
                 ),
@@ -573,18 +741,22 @@ def get_schedule_needs(schedule):
         print("schedule[] is empty, so there is nothing to plan.")
         return ""
 
+    moment = time.localtime()
+    weekday, now_minutes = current_moment(moment)
+    print(f"Planning from {weekday} at {minutes_to_clock(now_minutes)}.")
+
     stressed = sounds_stressed(schedule)
     deadline_notes = collect_deadlines(schedule)
 
     try:
-        reply = ask_for_plan(schedule, deadline_notes, stressed)
-        plan = parse_plan(reply, stressed=stressed, schedule=schedule)
+        reply = ask_for_plan(schedule, deadline_notes, stressed, now=moment)
+        plan = parse_plan(reply, stressed=stressed, schedule=schedule, now=moment)
     except Exception as error:
         print(f"The schedule planner could not be reached: {error}")
         plan = []
 
     if not plan:
-        plan = plan_from_phrases(schedule, stressed, deadline_notes)
+        plan = plan_from_phrases(schedule, stressed, deadline_notes, now=moment)
     if not plan:
         print("I don't see an assignment, class, or exam to put on a schedule.")
         return ""
