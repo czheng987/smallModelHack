@@ -4,7 +4,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from safety_agent import print_safety_result, review_conversation
+from safety_agent import has_crisis_keyword, print_safety_result, review_conversation
 
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
@@ -215,6 +215,31 @@ def format_resource(index, record):
     return "\n".join(lines)
 
 
+def asks_for_resources(phrases):
+    """True only when the student is asking for resources, not just describing a problem."""
+    text = " ".join(phrases).lower()
+    markers = (
+        "resource",
+        "resources",
+        "where can i",
+        "where do i",
+        "who can i",
+        "who should i",
+        "who do i",
+        "can you find",
+        "can you give",
+        "help me find",
+        "looking for",
+        "counsel",
+        "caps",
+        "hotline",
+        "phone number",
+        "someone to talk",
+        "someone i can talk",
+    )
+    return any(marker in text for marker in markers)
+
+
 def release_response(student_text, response_text):
     """Run the drafted resource list through the safety agent before showing it."""
     result = review_conversation([
@@ -227,12 +252,16 @@ def release_response(student_text, response_text):
 def get_resource_needs(resource):
     """Read resource[] and list 2-5 matching entries from unc_resources.json."""
     resource = clean_phrases(resource)
-    print("Resource intake is reading resource[]:")
-    for phrase in resource:
-        print(f"- {phrase}")
-
     if not resource:
-        print("resource[] is empty, so there is nothing to match.")
+        return []
+
+    student_text = "\n".join(resource)
+    if not asks_for_resources(resource):
+        if has_crisis_keyword(student_text):
+            result = review_conversation([
+                {"user": student_text, "assistant": ""},
+            ])
+            print_safety_result(result)
         return []
 
     matches = search_resources(resource, load_catalog())
