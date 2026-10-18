@@ -32,6 +32,24 @@ RESOURCE_WORD = re.compile(
     r"stress(?:ed)?|depress\w*|lonely)\b|\btalk to\b|\bsomeone to talk\b",
     re.IGNORECASE,
 )
+# Verbs alone are not a schedule item. "Study on" has no noun; "study for midterm" does.
+ACTION_VERBS = {
+    "study", "studying", "schedule", "scheduling", "sign", "signing", "plan",
+    "planning", "work", "working", "finish", "finishing", "complete", "completing",
+    "review", "reviewing", "practice", "practicing", "meet", "go", "going",
+    "make", "making", "take", "taking", "prepare", "preparing", "read", "reading",
+    "write", "writing", "submit", "submitting", "attend", "attending", "book",
+    "booking", "register", "registering", "start", "starting", "focus", "focusing",
+    "revise", "revising", "cram", "cramming", "organize", "organizing", "do",
+    "doing", "get", "getting", "set", "setting", "look", "looking", "keep",
+    "keeping", "put", "putting",
+}
+# "talk" or "find" does not say what the student needs. "someone" and "counseling" do.
+RESOURCE_VERBS = {
+    "talk", "talking", "find", "finding", "look", "looking", "feel", "feeling",
+    "get", "getting", "see", "seeing", "speak", "speaking", "chat", "chatting",
+    "help", "need", "want", "ask", "asking",
+}
 
 
 def shorten_phrase(phrase):
@@ -79,14 +97,41 @@ def prepare_phrases(phrases):
     return prepared
 
 
+def schedule_has_noun(phrase):
+    """A schedule phrase has to name the thing, not stop at a verb like "study on"."""
+    words = [
+        word for word in tokens(phrase)
+        if word not in ACTION_VERBS and word not in RESOURCE_VERBS
+        and not word.isdigit() and any(character.isalpha() for character in word)
+    ]
+    return bool(words)
+
+
+def resource_has_need(phrase):
+    """A resource phrase has to name the need, not stop at "help" or "talk"."""
+    words = [
+        word for word in tokens(phrase)
+        if word not in RESOURCE_VERBS and word not in ACTION_VERBS and not word.isdigit()
+    ]
+    return bool(words)
+
+
+def drop_bare_phrases(schedule, resource):
+    """Remove schedule verbs with no noun and resource lines with no need."""
+    schedule_out = [phrase for phrase in (schedule or []) if schedule_has_noun(phrase)]
+    resource_out = [phrase for phrase in (resource or []) if resource_has_need(phrase)]
+    return schedule_out, resource_out
+
+
 def arrange_phrases(schedule, resource):
     """Shorten model phrases and put each one on the schedule or resource side."""
     schedule_out = []
     resource_out = []
     for phrase in prepare_phrases(list(schedule or []) + list(resource or [])):
         if RESOURCE_WORD.search(phrase):
-            resource_out.append(phrase)
-        else:
+            if resource_has_need(phrase):
+                resource_out.append(phrase)
+        elif schedule_has_noun(phrase):
             schedule_out.append(phrase)
     return schedule_out, resource_out
 
@@ -123,6 +168,10 @@ def _short(phrase, message):
 
 def verify_split(message, schedule, resource):
     """Reward in [0, 1]. NeMo Gym would return this from verify()."""
+    if any(not schedule_has_noun(phrase) for phrase in (schedule or [])):
+        return 0.5
+    if any(not resource_has_need(phrase) for phrase in (resource or [])):
+        return 0.5
     phrases = prepare_phrases(list(schedule or []) + list(resource or []))
     expected = task_chunks(message)
     if not expected:
@@ -175,7 +224,11 @@ def consensus(results):
     asked, so a server that never answered pulls the agreement down.
     """
     asked = len(results)
-    votes = [item for item in results if item is not None]
+    votes = []
+    for item in results:
+        if item is None:
+            continue
+        votes.append(drop_bare_phrases(*item))
     if asked == 0 or not votes:
         return [], [], 0.0
     best = votes[0]

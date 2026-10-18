@@ -93,6 +93,10 @@ def _ask_for_phrases(user_text):
                 "Break a UNC student's message into short phrases from their own words. "
                 "Shorten each activity so a planner can read it. Keep every activity. "
                 "Do not invent a task.\n"
+                "Each schedule phrase must include the noun for what is being scheduled. "
+                "Do not return a bare verb such as \"study on\".\n"
+                "Each resource phrase must name what the student needs, such as counseling "
+                "or someone to talk to. Do not return only \"help\" or \"talk\".\n"
                 "Return JSON only, with two arrays:\n"
                 '{"schedule": ["phrase"], "resource": ["phrase"]}\n'
                 "schedule stores phrases about a scheduling problem: classes, exams, deadlines, "

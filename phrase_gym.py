@@ -75,6 +75,37 @@ def main():
         print("The servers agreed, but the phrases were not accurate.")
         return 1
 
+    bare = [(["study for midterm", "Study on"], []) for _ in range(SERVER_COUNT)]
+    ok, schedule, _resource, rate = accepted_split(
+        "I need to study for midterm and study on",
+        bare,
+    )
+    print(f"{rate:.0%}  dropped a verb with no noun")
+    if not ok or schedule != ["study for midterm"] or any(phrase.lower() == "study on" for phrase in schedule):
+        print("A schedule phrase without a noun was kept.")
+        return 1
+
+    only_verb = [(["Study on"], []) for _ in range(SERVER_COUNT)]
+    ok, schedule, _resource, rate = accepted_split("I need to study for midterm", only_verb)
+    print(f"{rate:.0%}  only \"Study on\"")
+    if ok or schedule:
+        print("A verb with no noun passed the phrase check.")
+        return 1
+
+    bare_need = [([], ["talk"]) for _ in range(SERVER_COUNT)]
+    ok, _schedule, resource, rate = accepted_split("I need someone to talk to", bare_need)
+    print(f"{rate:.0%}  resource verb without the need")
+    if ok or resource:
+        print("A resource phrase without the need was kept.")
+        return 1
+
+    named_need = [([], ["someone to talk to"]) for _ in range(SERVER_COUNT)]
+    ok, _schedule, resource, rate = accepted_split("I need someone to talk to", named_need)
+    print(f"{rate:.0%}  resource names the need")
+    if not ok or resource != ["someone to talk to"]:
+        print("A resource phrase that names the need was rejected.")
+        return 1
+
     print("Phrase check passed the gate.")
     return 0
 
