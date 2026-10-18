@@ -3,6 +3,8 @@ import re
 
 from openai import OpenAI
 
+from safety_agent import print_safety_result, review_conversation
+
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
     api_key="not-needed",
@@ -182,6 +184,15 @@ def ask_for_plan(schedule):
     return message_text(response.choices[0].message)
 
 
+def release_response(student_text, response_text):
+    """Run the drafted schedule through the safety agent before showing it."""
+    result = review_conversation([
+        {"user": student_text, "assistant": response_text},
+    ])
+    print_safety_result(result)
+    return result.get("allow", True)
+
+
 def get_schedule_needs(schedule):
     """Read schedule[] and print a plan with no overlaps and a lighter load."""
     schedule = clean_phrases(schedule)
@@ -205,6 +216,9 @@ def get_schedule_needs(schedule):
         return ""
 
     rendered = render_plan(plan)
+    if not release_response("\n".join(schedule), rendered):
+        return rendered
+
     print("Here is a schedule that leaves breaks and does not stack tasks on top of each other:")
     print(rendered)
     return rendered
