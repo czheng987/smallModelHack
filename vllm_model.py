@@ -1,9 +1,9 @@
-"""Client for the vLLM server used only by the schedule planner.
+"""Client for the vLLM server used by intake and the schedule planner.
 
-Scheduling takes several steps: clock, deadlines, one-time events, and
-work that has to be split. vLLM is the open inference server Red Hat AI
-is built on. It keeps Nemotron on the GPU and lets that one hard call
-think. Intake, resource, and safety stay on the original server.
+vLLM is the open inference server Red Hat AI is built on. It keeps
+Nemotron on the GPU. Intake sends its phrase votes there in one batch.
+The schedule planner sends its short task decision there too. Resource
+and safety stay on the original server.
 """
 
 import os
