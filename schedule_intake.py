@@ -152,30 +152,119 @@ def parse_plan(reply):
     return normalize_plan(data.get("days"))
 
 
-def ask_for_plan(schedule):
+DEADLINE_HINT = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"today|tomorrow|tonight|due|deadline|\d{1,2}/\d{1,2})\b",
+    re.IGNORECASE,
+)
+
+
+def parse_missing_deadlines(reply, schedule):
+    """Keep only deadline questions that refer to a task the student already named."""
+    text = reply or ""
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return []
+    try:
+        data = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return []
+    missing = data.get("missing") if isinstance(data, dict) else None
+    if not isinstance(missing, list):
+        return []
+    kept = []
+    for item in missing:
+        if not isinstance(item, str):
+            continue
+        name = " ".join(item.split())
+        if not name:
+            continue
+        lowered = name.lower()
+        if any(lowered in phrase.lower() or phrase.lower() in lowered for phrase in schedule):
+            kept.append(name)
+    return kept
+
+
+def phrases_without_deadline(schedule):
+    return [phrase for phrase in schedule if not DEADLINE_HINT.search(phrase)]
+
+
+def find_missing_deadlines(schedule):
+    """Ask which tasks have no day or date. Durations are never requested."""
     numbered = "\n".join(f"- {phrase}" for phrase in schedule)
+    try:
+        response = client.chat.completions.create(
+            model=SCHEDULE_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Decide which tasks have no deadline. "
+                        "A deadline is a weekday, a date, or the words today, tomorrow, tonight, or due. "
+                        "Do not ask how long a task takes. "
+                        'Return JSON only: {"missing": ["task from the list"]}. '
+                        "Use an empty list when every task already has a deadline."
+                    ),
+                },
+                {"role": "user", "content": f"schedule[]:\n{numbered}"},
+            ],
+            max_tokens=300,
+            temperature=0,
+        )
+        missing = parse_missing_deadlines(message_text(response.choices[0].message), schedule)
+    except Exception:
+        missing = phrases_without_deadline(schedule)
+    return missing
+
+
+def collect_deadlines(missing):
+    """Ask only for due dates. The student does not estimate how long work will take."""
+    if not missing:
+        return []
+    print("I will choose the study times. I only need the deadlines.")
+    notes = []
+    for task in missing:
+        answer = input(
+            f'When is "{task}" due? (type skip if there is no deadline): '
+        ).strip()
+        if answer and answer.lower() not in {"skip", "none", "no", "n/a"}:
+            notes.append(f"{task} is due {answer}")
+    return notes
+
+
+def ask_for_plan(schedule, deadline_notes):
+    numbered = "\n".join(f"- {phrase}" for phrase in schedule)
+    deadlines = "\n".join(f"- {note}" for note in deadline_notes) or "- No extra deadlines were given."
     response = client.chat.completions.create(
         model=SCHEDULE_MODEL,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "You plan a realistic schedule for one UNC student from schedule[]. "
-                    "Use only the tasks in that list. Do not invent extra exams, jobs, or deadlines. "
-                    "Do not diagnose a mental illness.\n"
+                    "You plan a realistic schedule for one UNC student. "
+                    "You choose every start and end time. "
+                    "The student does not say how long each assignment takes, and you must not ask them to. "
+                    "Estimate a realistic duration from the task itself.\n"
+                    "Read the student's words for stress. If they sound overwhelmed, anxious, or overloaded, "
+                    "use about 25 minute work blocks, add extra breaks, and spread the work across more days. "
+                    "If they sound calm, 45 minute blocks are fine.\n"
                     "Rules:\n"
-                    "- Break each large task into steps of 25 to 45 minutes.\n"
+                    "- Use only the tasks they named. Do not invent extra exams or jobs.\n"
+                    "- Do not diagnose a mental illness.\n"
                     "- Put a 10 minute break between work blocks.\n"
                     "- Do not overlap any blocks.\n"
-                    "- Keep work to 4 hours or less in one day. Move the rest to the next day.\n"
+                    "- Keep work to 4 hours or less in one day. If they sound stressed, keep it closer to 2 hours.\n"
                     "- Stay between 9:00 AM and 9:00 PM.\n"
                     "Return JSON only:\n"
-                    '{"days": [{"day": "Thursday", "blocks": [{"start": "16:00", "end": "16:45", "task": "Outline paper 1"}]}]}'
+                    '{"days": [{"day": "Thursday", "blocks": [{"start": "16:00", "end": "16:25", "task": "Outline the paper"}]}]}'
                 ),
             },
             {
                 "role": "user",
-                "content": f"schedule[]:\n{numbered}",
+                "content": (
+                    f"Student's words:\n{numbered}\n\n"
+                    f"Deadlines:\n{deadlines}"
+                ),
             },
         ],
         max_tokens=1200,
@@ -204,15 +293,17 @@ def get_schedule_needs(schedule):
         print("schedule[] is empty, so there is nothing to plan.")
         return ""
 
+    deadline_notes = collect_deadlines(find_missing_deadlines(schedule))
+
     try:
-        reply = ask_for_plan(schedule)
+        reply = ask_for_plan(schedule, deadline_notes)
         plan = parse_plan(reply)
     except Exception as error:
         print(f"The schedule planner could not be reached: {error}")
         return ""
 
     if not plan:
-        print("I could not turn those tasks into a timed plan. Try adding the day or a deadline.")
+        print("I could not build a schedule from those tasks.")
         return ""
 
     rendered = render_plan(plan)
