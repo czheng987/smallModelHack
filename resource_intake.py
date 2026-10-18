@@ -4,7 +4,20 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from safety_agent import has_crisis_keyword, print_safety_result, review_conversation
+from safety_agent import print_safety_result, review_conversation
+
+CRISIS_KEYWORDS = (
+    "kill myself", "end my life", "want to die", "suicide", "suicidal",
+    "hurt myself", "self harm", "self-harm",
+    "following me", "being followed", "not safe", "unsafe", "in danger",
+    "unalive", "stab myself",
+)
+
+
+def has_crisis_keyword(text):
+    """Backup crisis check that does not depend on a safety_agent helper."""
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in CRISIS_KEYWORDS)
 
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
