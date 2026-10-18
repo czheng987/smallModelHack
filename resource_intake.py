@@ -4,6 +4,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from phrase_check import is_resource_phrase
 from safety_agent import print_safety_result, review_conversation
 
 client = OpenAI(
@@ -217,6 +218,8 @@ def format_resource(index, record):
 
 def asks_for_resources(phrases):
     """True only when the student is asking for resources, not just describing a problem."""
+    if any(is_resource_phrase(phrase) for phrase in phrases):
+        return True
     text = " ".join(phrases).lower()
     markers = (
         "resource",

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Optional
 from unittest.mock import MagicMock
 
-from phrase_check import PASS_RATE, accepted_split, consensus, drop_bare_phrases, passes, verify_split
+from phrase_check import PASS_RATE, accepted_split, arrange_phrases, consensus, passes, verify_split
 
 # The Gym repo is a submodule. Put it on the path so intake can import it
 # without a separate editable install.
@@ -109,11 +109,12 @@ if SimpleResourcesServer is not None:
         last_resource: list[str] = Field(default_factory=list)
 
         async def verify(self, body: IntakeVerifyRequest) -> IntakeVerifyResponse:
-            schedule, resource = drop_bare_phrases(body.schedule, body.resource)
+            """Put each phrase in the right array, then score that corrected split."""
             if not body.answered:
                 reward = 0.0
                 schedule, resource = [], []
             else:
+                schedule, resource = arrange_phrases(body.schedule, body.resource)
                 reward = 1.0 if passes(verify_split(body.student_message, schedule, resource)) else 0.0
             payload = body.model_dump()
             payload.update(reward=reward, schedule=schedule, resource=resource)
