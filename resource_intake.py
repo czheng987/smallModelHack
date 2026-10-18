@@ -4,7 +4,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from safety_agent import has_crisis_keyword, print_safety_result, review_conversation
+from safety_agent import print_safety_result, review_conversation
 
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
@@ -247,7 +247,7 @@ def release_response(student_text, response_text):
         {"user": student_text, "assistant": response_text},
     ])
     print_safety_result(result)
-    return result.get("allow", True)
+    return not result.get("crisis", False)
 
 
 def get_resource_needs(resource):
@@ -258,10 +258,10 @@ def get_resource_needs(resource):
 
     student_text = "\n".join(resource)
     if not asks_for_resources(resource):
-        if has_crisis_keyword(student_text):
-            result = review_conversation([
-                {"user": student_text, "assistant": ""},
-            ])
+        result = review_conversation([
+            {"user": student_text, "assistant": ""},
+        ])
+        if result.get("crisis"):
             print_safety_result(result)
         return []
 

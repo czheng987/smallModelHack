@@ -190,7 +190,7 @@ def release_response(student_text, response_text):
         {"user": student_text, "assistant": response_text},
     ])
     print_safety_result(result)
-    return result.get("allow", True)
+    return not result.get("crisis", False)
 
 
 def get_schedule_needs(schedule):
