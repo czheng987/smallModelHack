@@ -157,7 +157,7 @@ RESOURCE_FILE=unc_resources.json
 
 Start Nemotron on port 8000, then `python serve_vllm.py`, then `uvicorn backend:app --port 8002 --reload`, then `npm run dev` inside `frontend`. Submit a check-in on the site. A sample message:
 
-> I have three papers due Friday and I need someone to talk to
+> I have three papers due Friday and I need to talk to someone.
 
 The page should show study blocks before Friday and a campus resource for talking with someone.
 
